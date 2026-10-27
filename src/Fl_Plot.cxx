@@ -9,6 +9,7 @@
 #include <FL/Fl_Button.H>
 #include <FL/Fl_Image_Surface.H>
 #include <FL/Fl_Native_File_Chooser.H>
+#include <FL/fl_ask.H>
 #include <FL/Fl_PNG_Image.H>
 #include <FL/fl_draw.H>
 #include <math.h>
@@ -76,7 +77,7 @@ Fl_Plot::Fl_Plot(int X, int Y, int W, int H, const char *L)
 }
 
 Fl_Plot::~Fl_Plot() {
-  for (size_t i = 0; i < items_.size(); i++) delete items_[i];
+  clear_items();
 }
 
 // ---------------------------------------------------------------------------
@@ -85,23 +86,33 @@ Fl_Plot::~Fl_Plot() {
 
 Fl_Plot_Item *Fl_Plot::add(Fl_Plot_Item *item) {
   if (!item) return 0;
-  if (std::find(items_.begin(), items_.end(), item) == items_.end()) {
-    items_.push_back(item);
-    item->plot_ = this;
-  }
+  if (item->plot_ == this) return item;
+  if (item->plot_) item->plot_->detach(item);   // owned by another plot: move it
+  items_.push_back(item);
+  item->plot_ = this;
   return item;
 }
 
-void Fl_Plot::remove(Fl_Plot_Item *item) {
+void Fl_Plot::detach(Fl_Plot_Item *item) {
   std::vector<Fl_Plot_Item *>::iterator it = std::find(items_.begin(), items_.end(), item);
-  if (it == items_.end()) return;
-  items_.erase(it);
+  if (it != items_.end()) items_.erase(it);
+  item->plot_ = 0;
+  redraw();
+}
+
+void Fl_Plot::remove(Fl_Plot_Item *item) {
+  if (!item || item->plot_ != this) return;
+  detach(item);
   delete item;
 }
 
 void Fl_Plot::clear_items() {
-  for (size_t i = 0; i < items_.size(); i++) delete items_[i];
-  items_.clear();
+  std::vector<Fl_Plot_Item *> v;
+  v.swap(items_);
+  for (size_t i = 0; i < v.size(); i++) {
+    v[i]->plot_ = 0;
+    delete v[i];
+  }
   color_index_ = 0;
 }
 
@@ -133,6 +144,21 @@ Fl_Plot_Line *Fl_Plot::plot(const std::vector<double> &x, const std::vector<doub
 
 Fl_Plot_Line *Fl_Plot::plot(const std::vector<double> &y, const char *fmt) {
   return plot(0, y.empty() ? 0 : &y[0], y.size(), fmt);
+}
+
+Fl_Plot_Line *Fl_Plot::plot_sampled(const double *y, size_t n, double x0, double dx,
+                                    const char *fmt) {
+  Fl_Plot_Line *l = new Fl_Plot_Line;
+  l->data_sampled(y, n, x0, dx);
+  l->color(next_color());
+  if (fmt) l->format(fmt);
+  add(l);
+  return l;
+}
+
+Fl_Plot_Line *Fl_Plot::plot_sampled(const std::vector<double> &y, double x0, double dx,
+                                    const char *fmt) {
+  return plot_sampled(y.empty() ? 0 : &y[0], y.size(), x0, dx, fmt);
 }
 
 Fl_Plot_Line *Fl_Plot::scatter(const double *x, const double *y, size_t n,
@@ -211,6 +237,10 @@ Fl_Plot_Annotation *Fl_Plot::text(double x, double y, const char *s, Fl_Plot_Coo
 static void sanitize_range(double &a, double &b) {
   if (a > b) std::swap(a, b);
   if (!is_finite(a) || !is_finite(b)) { a = 0; b = 1; return; }
+  // keep b - a (and the transform built from it) finite
+  const double big = 1e300;
+  a = std::max(a, -big);
+  b = std::min(b, big);
   double m = std::max(fabs(a), fabs(b));
   double minspan = std::max(m * 1e-12, 1e-300);
   if (b - a < minspan) {
@@ -237,6 +267,8 @@ void Fl_Plot::compute_auto_limits(double &x0, double &x1, double &y0, double &y1
   sanitize_range(y0, y1);
   double mx = (x1 - x0) * margin_, my = (y1 - y0) * margin_;
   x0 -= mx; x1 += mx; y0 -= my; y1 += my;
+  sanitize_range(x0, x1);
+  sanitize_range(y0, y1);
 }
 
 void Fl_Plot::apply_autoscale() {
@@ -292,6 +324,7 @@ void Fl_Plot::reset_zoom() {
 }
 
 void Fl_Plot::zoom(double f, double cx, double cy, int axes) {
+  if (!(f > 0) || !is_finite(f) || !is_finite(cx) || !is_finite(cy)) return;
   double x0 = vx0_, x1 = vx1_, y0 = vy0_, y1 = vy1_;
   if (axes & FL_PLOT_X) { x0 = cx + (x0 - cx) * f; x1 = cx + (x1 - cx) * f; }
   if (axes & FL_PLOT_Y) { y0 = cy + (y0 - cy) * f; y1 = cy + (y1 - cy) * f; }
@@ -667,11 +700,14 @@ Fl_RGB_Image *Fl_Plot::image() {
   Fl_Image_Surface surf(w(), h());
   Fl_Surface_Device::push_current(&surf);
   // draw as if the widget were at the surface origin (layout uses x(), y())
-  int ox = x(), oy = y();
+  // and without the toolbar band, which is not part of the capture
+  int ox = x(), oy = y(), tbh = toolbar_h_;
   Fl_Widget::resize(0, 0, w(), h());
+  toolbar_h_ = 0;
   capturing_ = true;
   draw_contents(true);
   capturing_ = false;
+  toolbar_h_ = tbh;
   Fl_Widget::resize(ox, oy, w(), h());
   update_layout();
   Fl_RGB_Image *img = surf.image();
@@ -733,7 +769,8 @@ void Fl_Plot::tb_cb(Fl_Widget *w, void *data) {
     fc.filter("PNG\t*.png");
     fc.preset_file("plot.png");
     fc.options(Fl_Native_File_Chooser::SAVEAS_CONFIRM | Fl_Native_File_Chooser::USE_FILTER_EXT);
-    if (fc.show() == 0) p->save_png(fc.filename());
+    if (fc.show() == 0 && p->save_png(fc.filename()) != 0)
+      fl_alert("Could not save %s", fc.filename());
   }
 }
 

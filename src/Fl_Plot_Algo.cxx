@@ -57,9 +57,18 @@ void compute_ticks(double lo, double hi, int max_ticks, Ticks &t) {
   t.step = step;
   const double eps = 1e-9;
   double k0 = ceil(lo / step - eps), k1 = floor(hi / step + eps);
-  for (double k = k0; k <= k1; k += 1) {
-    double v = k * step;
+  // a range that overflows (hi - lo = inf) or a max_ticks far too large
+  // would otherwise produce an unbounded number of ticks
+  if (!is_finite(hi - lo) || !(k1 - k0 < 10000)) {
+    t.step = 1; t.minor_step = 0.2; t.decimals = 0; t.exponent = 0;
+    return;
+  }
+  // count with an integer: past 2^53, k += 1 would no longer change k
+  long long nk = (long long)(k1 - k0);
+  for (long long i = 0; i <= nk; i++) {
+    double v = (k0 + (double)i) * step;
     if (fabs(v) < step * 1e-9) v = 0;
+    if (!t.major.empty() && v <= t.major.back()) continue;   // beyond double precision
     t.major.push_back(v);
   }
 
@@ -69,10 +78,13 @@ void compute_ticks(double lo, double hi, int max_ticks, Ticks &t) {
   t.minor_step = ms;
   if ((hi - lo) / ms < 5000) {
     double m0 = ceil(lo / ms - eps), m1 = floor(hi / ms + eps);
-    for (double k = m0; k <= m1; k += 1) {
-      long long ki = (long long)llround(k);
-      if (ki % ndiv == 0) continue;
-      t.minor.push_back(k * ms);
+    long long nm = (long long)(m1 - m0);
+    for (long long i = 0; i <= nm; i++) {
+      double k = m0 + (double)i;
+      if (fmod(k, (double)ndiv) == 0) continue;
+      double v = k * ms;
+      if (!t.minor.empty() && v <= t.minor.back()) continue;
+      t.minor.push_back(v);
     }
   }
 
