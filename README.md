@@ -25,8 +25,11 @@ replace matplotlib or produce print-quality figures.
   keyboard. Each of these is an action method you can call from your own
   buttons or events. `default_interaction()` sets up a sensible default
   set of bindings, and `toolbar(true)` shows an optional built-in toolbar.
+* `Fl_Plot_Window`: a ready-made plot window with a menu bar, toolbar and
+  axes dialog, for handing a whole figure off to its own window as you
+  would with a matplotlib figure.
 * Event hook that reports the mouse in both screen and data coordinates.
-* PNG capture (`save_png()`), or an `Fl_RGB_Image` for your own use.
+* PNG capture (`save_png()`, or `save_png_dialog()` with a file chooser), or an `Fl_RGB_Image` for your own use.
 
 ## Building
 
@@ -46,9 +49,10 @@ ctest --test-dir build      # the render test runs under xvfb-run when it is ava
 ./build/demo                # four plots showing most features
 ./build/bigdata             # 1.2 million points, prints the redraw time
 ./build/custom_bindings     # everything wired by hand
+./build/plot_window         # Fl_Plot_Window, blocking (add --app for pop-up windows)
 ```
 
-The library is four source files (`src/`) and three headers (`include/`).
+The library is five source files (`src/`) and four headers (`include/`).
 Linking against the `fltk_plot` target pulls in `fltk::fltk` and
 `fltk::images`. You can also just drop the files into your own build.
 
@@ -120,7 +124,8 @@ for units or dates), `legend()`, `legend_position()`, `axes_color()`,
 `textfont()`/`textsize()`.
 
 Limits: `xlim(a, b)` and `ylim(a, b)` fix an axis, and `xlim_auto()` and
-`ylim_auto()` turn autoscaling back on. `view(x0, x1, y0, y1)` sets the
+`ylim_auto()` turn autoscaling back on (`xlim_is_auto()` and
+`ylim_is_auto()` report it). `view(x0, x1, y0, y1)` sets the
 visible region. `xmin()` and the related calls read the current view.
 
 Color cycle: new items take their colors in turn from the tab10 palette
@@ -172,6 +177,43 @@ struct Fl_Plot_Event {
 to link axes between plots; `examples/custom_bindings.cxx` shows both
 callbacks. For your own coordinate math there are `data_to_screen()`,
 `screen_to_data()`, `axes_box()` and `region()`.
+
+## Plot window
+
+When an application just wants to show a plot and leave the rest to the
+window, use `Fl_Plot_Window` (`#include "Fl_Plot_Window.H"`). It is an
+`Fl_Double_Window` holding one `Fl_Plot` below a menu bar, with the plot
+toolbar and `default_interaction()` already on. `axes()` returns the plot.
+
+```cpp
+// Blocking, like plt.show(): run() returns when the window is closed.
+Fl_Plot_Window win(800, 560, "Response");
+win.axes()->plot(t, y, "b-")->label("output");
+win.axes()->xlabel("$t$ (s)");
+win.run();
+```
+
+```cpp
+// Fire and forget, from an application that already runs Fl::run().
+Fl_Plot_Window *w = new Fl_Plot_Window(800, 560, "Spectrum");
+w->delete_on_close(true);          // deletes itself when the user closes it
+w->axes()->plot(f, mag);
+w->show();
+```
+
+| Menu | Items |
+|---|---|
+| File | Save as PNG… (Ctrl/Cmd+S), Close (Ctrl/Cmd+W) |
+| View | Reset view (`r`), Zoom in (`+`), Zoom out (`-`), Grid (`g`), Minor grid, Legend (`l`), Toolbar |
+| Tools | Zoom box (`z`) / Pan (`p`) for left drag, Axes… (Ctrl/Cmd+E): title, labels and limits |
+| Help | Mouse and keys… |
+
+Other calls: `run()` (safe with `delete_on_close(true)`), `close()`,
+`close_callback(cb, data)` (called before the window is hidden and
+deleted), `save_dialog()`, `axes_dialog()`, `help_dialog()`. `menubar()`
+returns the `Fl_Menu_Bar`, so you can add your own entries next to the
+built-in ones. Esc cancels a zoom box and does not close the window.
+`examples/plot_window.cxx` shows both uses.
 
 ## Performance
 

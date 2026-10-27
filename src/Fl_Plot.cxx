@@ -723,6 +723,21 @@ int Fl_Plot::save_png(const char *filename) {
   return r;
 }
 
+int Fl_Plot::save_png_dialog() {
+  Fl_Native_File_Chooser fc;
+  fc.title("Save plot as PNG");
+  fc.type(Fl_Native_File_Chooser::BROWSE_SAVE_FILE);
+  fc.filter("PNG\t*.png");
+  fc.preset_file("plot.png");
+  fc.options(Fl_Native_File_Chooser::SAVEAS_CONFIRM | Fl_Native_File_Chooser::USE_FILTER_EXT);
+  if (fc.show() != 0) return 1;
+  if (save_png(fc.filename()) != 0) {
+    fl_alert("Could not save %s", fc.filename());
+    return -1;
+  }
+  return 0;
+}
+
 // ---------------------------------------------------------------------------
 // Interaction
 // ---------------------------------------------------------------------------
@@ -762,16 +777,7 @@ void Fl_Plot::tb_cb(Fl_Widget *w, void *data) {
     p->drag_mode(FL_LEFT_MOUSE, p->b_pan_->value() ? FL_PLOT_DRAG_PAN : FL_PLOT_DRAG_NONE);
   else if (w == p->b_zoom_)
     p->drag_mode(FL_LEFT_MOUSE, p->b_zoom_->value() ? FL_PLOT_DRAG_ZOOM_BOX : FL_PLOT_DRAG_NONE);
-  else if (w == p->b_save_) {
-    Fl_Native_File_Chooser fc;
-    fc.title("Save plot as PNG");
-    fc.type(Fl_Native_File_Chooser::BROWSE_SAVE_FILE);
-    fc.filter("PNG\t*.png");
-    fc.preset_file("plot.png");
-    fc.options(Fl_Native_File_Chooser::SAVEAS_CONFIRM | Fl_Native_File_Chooser::USE_FILTER_EXT);
-    if (fc.show() == 0 && p->save_png(fc.filename()) != 0)
-      fl_alert("Could not save %s", fc.filename());
-  }
+  else if (w == p->b_save_) p->save_png_dialog();
 }
 
 void Fl_Plot::update_readout(int sx, int sy) {

@@ -5,10 +5,14 @@
 //   test_render [output_dir]
 
 #include "../examples/demo_plots.H"
+#include "Fl_Plot_Window.H"
 
 #include <FL/Fl.H>
 #include <FL/Fl_Double_Window.H>
+#include <FL/Fl_Check_Button.H>
 #include <FL/Fl_Image_Surface.H>
+#include <FL/Fl_Input.H>
+#include <FL/Fl_Menu_Bar.H>
 #include <FL/Fl_PNG_Image.H>
 #include <FL/Fl_RGB_Image.H>
 #include <string.h>
@@ -41,6 +45,26 @@ static int hook_calls = 0;
 static int hook(Fl_Plot *, const Fl_Plot_Event &e, void *) {
   hook_calls++;
   return e.event == FL_PUSH && e.button == FL_RIGHT_MOUSE;   // swallow right clicks
+}
+static void close_window(void *w) { ((Fl_Plot_Window *)w)->close(); }
+static int closed_calls = 0;
+static void on_close(Fl_Plot_Window *, void *) { closed_calls++; }
+static bool pick(Fl_Plot_Window *w, const char *path) {
+  const Fl_Menu_Item *it = w->menubar()->find_item(path);
+  if (!it) return false;
+  w->menubar()->picked(it);
+  return true;
+}
+// Drives the modal axes dialog: new title, fixed x limits [1, 2], then OK.
+static void fill_axes_dialog(void *) {
+  Fl_Window *d = Fl::modal();
+  if (!d || d->children() < 11) return;
+  ((Fl_Input *)d->child(0))->value("new title");
+  ((Fl_Check_Button *)d->child(5))->value(0);
+  d->child(5)->do_callback();
+  ((Fl_Input *)d->child(3))->value("1");
+  ((Fl_Input *)d->child(4))->value("2");
+  d->child(10)->do_callback();   // OK
 }
 #define CHECK(c) do { if (!(c)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); failures++; } } while (0)
 
@@ -253,6 +277,77 @@ int main(int argc, char **argv) {
     CHECK(ia && ib && ink(ia) == ink(ib));
     delete ia;
     delete ib;
+  }
+
+  // ---- Fl_Plot_Window ----
+  {
+    Fl_Plot_Window w(640, 480, "figure");
+    Fl_Plot *a = w.axes();
+    demo_lines(a);
+    a->grid(false);
+    CHECK(a && a->toolbar() && a->drag_mode(FL_LEFT_MOUSE) == FL_PLOT_DRAG_ZOOM_BOX);
+    CHECK(a->y() == w.menubar()->h() && a->h() == w.h() - w.menubar()->h());
+    w.show();
+    Fl::flush();
+    CHECK(w.shown() && Fl::focus() == a);
+
+    // menu items act on the plot, and check marks follow the plot state
+    const Fl_Menu_Item *grid = w.menubar()->find_item("&View/&Grid");
+    const Fl_Menu_Item *pan = w.menubar()->find_item("&Tools/&Pan");
+    const Fl_Menu_Item *zoom = w.menubar()->find_item("&Tools/&Zoom box");
+    CHECK(grid && pan && zoom);
+    CHECK(pick(&w, "&View/&Grid") && a->grid());
+    CHECK(grid && grid->value());
+    CHECK(pick(&w, "&Tools/&Pan") && a->drag_mode(FL_LEFT_MOUSE) == FL_PLOT_DRAG_PAN);
+    CHECK(pan && zoom && pan->value() && !zoom->value());
+    send_key(a, 'z', "z");                   // the plot's own key ...
+    w.sync_menu();                           // ... shows up in the menu
+    CHECK(pan && zoom && !pan->value() && zoom->value());
+    CHECK(pick(&w, "&View/&Toolbar") && !a->toolbar());
+    CHECK(pick(&w, "&View/&Toolbar") && a->toolbar());
+    a->zoom_in();
+    CHECK(pick(&w, "&View/&Reset view") && a->xmin() < 0.01);
+
+    // axes dialog
+    Fl::add_timeout(0.05, fill_axes_dialog);
+    CHECK(pick(&w, "&Tools/&Axes..."));
+    CHECK(!strcmp(a->title(), "new title"));
+    CHECK(!a->xlim_is_auto() && a->ylim_is_auto());
+    CHECK(a->xmin() == 1 && a->xmax() == 2);
+
+    // Esc does not close the window; the close button does
+    Fl::e_number = FL_SHORTCUT;
+    Fl::e_keysym = FL_Escape;
+    w.do_callback();
+    CHECK(w.shown());
+
+    // run() returns once the window is closed
+    w.close_callback(on_close);
+    closed_calls = 0;
+    Fl::add_timeout(0.05, close_window, &w);
+    w.run();
+    CHECK(!w.shown() && closed_calls == 1);
+  }
+  {
+    // fire and forget: the window deletes itself
+    Fl_Plot_Window *w = new Fl_Plot_Window(400, 300);
+    w->delete_on_close(true);
+    w->axes()->plot_sampled(std::vector<double>(100, 1.0), 0, 1);
+    Fl_Widget_Tracker wt(w);
+    w->show();
+    Fl::flush();
+    CHECK(pick(w, "&File/&Close"));
+    Fl::wait(0.01);
+    CHECK(!wt.exists());
+
+    // and run() copes with that
+    w = new Fl_Plot_Window(400, 300);
+    w->delete_on_close(true);
+    Fl_Widget_Tracker wt2(w);
+    Fl::add_timeout(0.05, close_window, w);
+    w->run();
+    Fl::wait(0.01);
+    CHECK(!wt2.exists());
   }
 
   if (failures) { printf("%d failure(s)\n", failures); return 1; }
