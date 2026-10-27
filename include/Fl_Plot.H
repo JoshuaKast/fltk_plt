@@ -157,6 +157,8 @@ public:
   // x may be NULL: y is then plotted against 0..n-1.
   void data(const double *x, const double *y, size_t n);
   void data(const std::vector<double> &x, const std::vector<double> &y);
+  // Uniformly sampled: y[i] at x0 + i * dx.
+  void data_sampled(const double *y, size_t n, double x0, double dx);
   size_t size() const { return y_.size(); }
   const double *x_data() const { return x_.empty() ? 0 : &x_[0]; }
   const double *y_data() const { return y_.empty() ? 0 : &y_[0]; }
@@ -169,14 +171,14 @@ public:
 
   void color(Fl_Color c) { color_ = c; }
   Fl_Color color() const { return color_; }
-  void line_style(int s) { line_style_ = s; }   // FL_SOLID.. or FL_PLOT_NO_LINE
+  void line_style(int s) { line_style_ = s; cache_valid_ = false; }   // FL_SOLID.. or FL_PLOT_NO_LINE
   int line_style() const { return line_style_; }
-  void line_width(int w) { line_width_ = w; }
+  void line_width(int w) { line_width_ = w; cache_valid_ = false; }
   int line_width() const { return line_width_; }
 
-  void marker(Fl_Plot_Marker m) { marker_ = m; }
+  void marker(Fl_Plot_Marker m) { marker_ = m; cache_valid_ = false; }
   Fl_Plot_Marker marker() const { return marker_; }
-  void marker_size(int s) { marker_size_ = s; }   // pixels (diameter)
+  void marker_size(int s) { marker_size_ = s; cache_valid_ = false; }   // pixels (diameter)
   int marker_size() const { return marker_size_; }
   // Marker edge and face colors default to color().
   void marker_color(Fl_Color c) { marker_color_ = c; marker_color_set_ = true; }
@@ -185,7 +187,7 @@ public:
   Fl_Color marker_fill_color() const { return marker_fill_set_ ? marker_fill_ : marker_color(); }
   void marker_filled(bool f) { marker_filled_ = f; }
   bool marker_filled() const { return marker_filled_; }
-  void marker_line_width(int w) { marker_line_width_ = w; }
+  void marker_line_width(int w) { marker_line_width_ = w; cache_valid_ = false; }
   int marker_line_width() const { return marker_line_width_; }
 
   void draw(const Fl_Plot_Algo::Xform &xf);
@@ -224,6 +226,7 @@ private:
 class FL_EXPORT Fl_Plot_Fill : public Fl_Plot_Item {
 public:
   Fl_Plot_Fill();
+  // x may be NULL: the curves are then plotted against 0..n-1.
   void data(const double *x, const double *y1, const double *y2, size_t n);
   // y2 constant (e.g. 0 to fill down to the axis)
   void data(const double *x, const double *y1, double y2, size_t n);
@@ -234,11 +237,11 @@ public:
   void alpha(double a) { alpha_ = a < 0 ? 0 : a > 1 ? 1 : a; }
   double alpha() const { return alpha_; }
   // Optional outline along both curves (FL_PLOT_NO_LINE = none, default).
-  void edge_style(int s) { edge_style_ = s; }
+  void edge_style(int s) { edge_style_ = s; cache_valid_ = false; }
   int edge_style() const { return edge_style_; }
   void edge_color(Fl_Color c) { edge_color_ = c; }
   Fl_Color edge_color() const { return edge_color_; }
-  void edge_width(int w) { edge_width_ = w; }
+  void edge_width(int w) { edge_width_ = w; cache_valid_ = false; }
 
   void draw(const Fl_Plot_Algo::Xform &xf);
   bool draw_legend_icon(int x, int y, int w, int h);
@@ -375,18 +378,26 @@ public:
   ~Fl_Plot();
 
   // ---- items ----------------------------------------------------------
-  // The plot owns added items and deletes them.
+  // The plot owns added items and deletes them. Deleting an item yourself
+  // also removes it from its plot. Adding an item that belongs to another
+  // plot moves it here.
   Fl_Plot_Item *add(Fl_Plot_Item *item);
   void remove(Fl_Plot_Item *item);           // removes and deletes
   void clear_items();                        // removes and deletes all
   int items() const { return (int)items_.size(); }
-  Fl_Plot_Item *item(int i) const { return items_[i]; }
+  Fl_Plot_Item *item(int i) const { return i >= 0 && i < (int)items_.size() ? items_[i] : 0; }
 
   // Convenience creators (each returns the new, already added item).
   Fl_Plot_Line *plot(const double *x, const double *y, size_t n, const char *fmt = 0);
   Fl_Plot_Line *plot(const std::vector<double> &x, const std::vector<double> &y,
                      const char *fmt = 0);
   Fl_Plot_Line *plot(const std::vector<double> &y, const char *fmt = 0);
+  // Uniformly sampled signal: y[i] is plotted at x0 + i * dx (e.g. a time
+  // axis from a sample rate: dx = 1 / fs).
+  Fl_Plot_Line *plot_sampled(const double *y, size_t n, double x0, double dx,
+                             const char *fmt = 0);
+  Fl_Plot_Line *plot_sampled(const std::vector<double> &y, double x0, double dx,
+                             const char *fmt = 0);
   Fl_Plot_Line *scatter(const double *x, const double *y, size_t n,
                         Fl_Plot_Marker m = FL_PLOT_CIRCLE, int size = 5);
   Fl_Plot_Fill *fill_between(const double *x, const double *y1, const double *y2,
@@ -462,14 +473,14 @@ public:
   // Set the view without changing autoscale state or the home view.
   void view(double x0, double x1, double y0, double y1);
   // Fraction of the data range added on each side when autoscaling.
-  void margin(double m) { margin_ = m; }
+  void margin(double m) { margin_ = m > 0 ? m : 0; }
 
   // ---- actions (wire these to your own buttons/keys if you like) ---------
   void reset_zoom();                 // back to home (autoscaled or xlim/ylim)
   void zoom(double factor, double cx, double cy, int axes = FL_PLOT_XY);
   void zoom_in(int axes = FL_PLOT_XY);   // about the center, by zoom_step()
   void zoom_out(int axes = FL_PLOT_XY);
-  void zoom_step(double f) { zoom_step_ = f; }
+  void zoom_step(double f) { if (f > 1) zoom_step_ = f; }   // > 1
   void zoom_to(double x0, double x1, double y0, double y1);
   void pan_pixels(double dx, double dy, int axes = FL_PLOT_XY);
   // Interactive zoom box in window coordinates.
@@ -523,6 +534,8 @@ public:
   void update_layout();
 
 private:
+  friend class Fl_Plot_Item;
+  void detach(Fl_Plot_Item *item);   // drop from items_ without deleting
   struct Axis_Ticks {
     Fl_Plot_Algo::Ticks t;
     std::vector<std::string> labels;

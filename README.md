@@ -95,12 +95,17 @@ followed by `add()`. Either way the plot owns the item and deletes it.
 | Call | Item | Notes |
 |---|---|---|
 | `plot(x, y, n, fmt)`, `plot(xv, yv, fmt)`, `plot(yv)` | `Fl_Plot_Line` | `fmt`: colors `bgrcmykw`, styles `- -- : -.`, markers `o s d ^ v + x * .` |
+| `plot_sampled(y, n, x0, dx, fmt)`, `plot_sampled(yv, x0, dx)` | `Fl_Plot_Line` | uniformly sampled signal: `y[i]` at `x0 + i*dx` (`dx = 1/fs` for a time axis) |
 | `scatter(x, y, n, marker, size)` | `Fl_Plot_Line` | markers only |
-| `fill_between(x, y1, y2, n, alpha)` | `Fl_Plot_Fill` | `y2` may be an array or a constant |
+| `fill_between(x, y1, y2, n, alpha)` | `Fl_Plot_Fill` | `y2` may be an array or a constant; `x` may be NULL (index) |
 | `polygon(x, y, n, fill)` | `Fl_Plot_Polygon` | non-convex is fine; `coords(FL_PLOT_AXES)` for axes-fraction coordinates |
 | `circle(cx, cy, r, fill, units)` | `Fl_Plot_Circle` | `FL_PLOT_DATA` radius (an ellipse when the x and y scales differ) or `FL_PLOT_PIXELS` |
 | `axhline(y)`, `axvline(x)` | `Fl_Plot_Ref_Line` | infinite reference lines, not autoscaled |
 | `text(x, y, str, coords)` | `Fl_Plot_Annotation` | align, angle, pixel offset, font, optional box |
+
+Items are owned by the plot. `remove(item)` deletes one, and deleting an
+item yourself also takes it out of its plot. `add()` with an item from
+another plot moves it.
 
 Line styling: `color()`, `line_style()` (`FL_SOLID`, `FL_DASH`, `FL_DOT`,
 `FL_DASHDOT`, or `FL_PLOT_NO_LINE`), `line_width()`, `marker()`,

@@ -70,7 +70,9 @@ Fl_Plot_Item::Fl_Plot_Item()
   b_[0] = b_[1] = b_[2] = b_[3] = 0;
 }
 
-Fl_Plot_Item::~Fl_Plot_Item() {}
+Fl_Plot_Item::~Fl_Plot_Item() {
+  if (plot_) plot_->detach(this);   // deleted directly by the application
+}
 
 bool Fl_Plot_Item::bounds(double &x0, double &x1, double &y0, double &y1) const {
   if (!has_b_) return false;
@@ -111,6 +113,7 @@ Fl_Plot_Line::Fl_Plot_Line()
     drawn_vertices_(0), drawn_markers_(0) {}
 
 void Fl_Plot_Line::data(const double *x, const double *y, size_t n) {
+  if (!y) n = 0;
   y_.assign(y, y + n);
   if (x) x_.assign(x, x + n);
   else {
@@ -127,6 +130,13 @@ void Fl_Plot_Line::data(const double *x, const double *y, size_t n) {
 void Fl_Plot_Line::data(const std::vector<double> &x, const std::vector<double> &y) {
   size_t n = std::min(x.size(), y.size());
   data(n ? &x[0] : 0, n ? &y[0] : 0, n);
+}
+
+void Fl_Plot_Line::data_sampled(const double *y, size_t n, double x0, double dx) {
+  if (!y) n = 0;
+  std::vector<double> x(n);
+  for (size_t i = 0; i < n; i++) x[i] = x0 + (double)i * dx;
+  data(n ? &x[0] : 0, y, n);
 }
 
 void Fl_Plot_Line::format(const char *fmt) {
@@ -301,15 +311,24 @@ Fl_Plot_Fill::Fl_Plot_Fill()
   : sorted_(true), color_(FL_BLUE), edge_color_(FL_BLUE), alpha_(1),
     edge_style_(FL_PLOT_NO_LINE), edge_width_(1), cache_valid_(false) {}
 
+// x may be NULL (index), like Fl_Plot_Line; a NULL y1 or y2 means no data.
+static void fill_x(std::vector<double> &v, const double *x, size_t n) {
+  if (x) { v.assign(x, x + n); return; }
+  v.resize(n);
+  for (size_t i = 0; i < n; i++) v[i] = (double)i;
+}
+
 void Fl_Plot_Fill::data(const double *x, const double *y1, const double *y2, size_t n) {
-  x_.assign(x, x + n);
+  if (!y1 || !y2) n = 0;
+  fill_x(x_, x, n);
   y1_.assign(y1, y1 + n);
   y2_.assign(y2, y2 + n);
   prepare();
 }
 
 void Fl_Plot_Fill::data(const double *x, const double *y1, double y2, size_t n) {
-  x_.assign(x, x + n);
+  if (!y1) n = 0;
+  fill_x(x_, x, n);
   y1_.assign(y1, y1 + n);
   y2_.assign(n, y2);
   prepare();
@@ -420,6 +439,7 @@ Fl_Plot_Polygon::Fl_Plot_Polygon()
     alpha_(1), edge_style_(FL_SOLID), edge_width_(1) {}
 
 void Fl_Plot_Polygon::data(const double *x, const double *y, size_t n) {
+  if (!x || !y) n = 0;
   x_.assign(x, x + n);
   y_.assign(y, y + n);
   set_bounds(x, y, n);

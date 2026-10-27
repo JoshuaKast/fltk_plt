@@ -49,6 +49,17 @@ static void test_ticks() {
   CHECK(has0);
 }
 
+// ranges whose span overflows must not produce an unbounded tick list
+static void test_ticks_extreme() {
+  Ticks t;
+  compute_ticks(-1e308, 1e308, 8, t);
+  CHECK(t.major.size() < 10000);
+  compute_ticks(0, 1, 1 << 30, t);
+  CHECK(t.major.size() <= 10001);
+  compute_ticks(1e15, 1e15 + 1, 8, t);
+  CHECK(t.major.size() >= 2 && t.major.size() < 20);
+}
+
 static void test_clip() {
   Rect r = { 0, 0, 10, 10 };
   double ax = -5, ay = 5, bx = 15, by = 5;
@@ -193,6 +204,7 @@ static void test_fill() {
 
 int main() {
   test_ticks();
+  test_ticks_extreme();
   test_clip();
   test_minmax();
   test_decimation();

@@ -200,6 +200,61 @@ int main(int argc, char **argv) {
     delete img;
   }
 
+  // ---- robustness ----
+  {
+    Fl_Plot r(0, 0, 400, 300);
+    // style set after a draw reaches the next draw (cached geometry is rebuilt)
+    std::vector<double> y(50);
+    for (int i = 0; i < 50; i++) y[i] = sin(i * 0.2);
+    Fl_Plot_Line *l = r.plot_sampled(y, 10.0, 0.5);
+    CHECK(l->x_data()[0] == 10.0 && l->x_data()[49] == 10.0 + 49 * 0.5 && l->sorted());
+    delete r.image();
+    CHECK(l->drawn_markers() == 0);
+    l->marker(FL_PLOT_CIRCLE);
+    delete r.image();
+    CHECK(l->drawn_markers() > 0);
+    l->line_style(FL_PLOT_NO_LINE);
+    delete r.image();
+    CHECK(l->drawn_vertices() == 0);
+
+    // deleting an item directly detaches it; add() moves an item between plots
+    Fl_Plot_Line *l2 = r.plot(y);
+    CHECK(r.items() == 2);
+    delete l2;
+    CHECK(r.items() == 1 && r.item(1) == 0);
+    Fl_Plot r2(0, 0, 400, 300);
+    r2.add(l);
+    CHECK(r.items() == 0 && r2.items() == 1 && l->plot() == &r2);
+    delete r.image();
+
+    // NULL data and extreme values neither crash nor hang
+    r.plot(0, 0, 10)->label("null");
+    r.fill_between(0, &y[0], 0.0, y.size());
+    double big[3] = { -1e308, 0, 1e308 };
+    r.plot(0, big, 3);
+    Fl_RGB_Image *img = r.image();
+    CHECK(img != 0);
+    delete img;
+    CHECK(r.xmax() - r.xmin() < 1e301 && r.ymax() - r.ymin() < 1e301);
+    for (int i = 0; i < 5000; i++) r.zoom_out();
+    r.zoom(0, 0, 0);
+    r.zoom(-2, 0, 0);
+    delete r.image();
+    CHECK(r.ymax() - r.ymin() > 0 && r.ymax() - r.ymin() < 1e301);
+  }
+
+  // the captured image does not include the toolbar band
+  {
+    Fl_Plot a(0, 0, 400, 300), b(0, 0, 400, 300);
+    b.toolbar(true);
+    a.title("t");
+    b.title("t");
+    Fl_RGB_Image *ia = a.image(), *ib = b.image();
+    CHECK(ia && ib && ink(ia) == ink(ib));
+    delete ia;
+    delete ib;
+  }
+
   if (failures) { printf("%d failure(s)\n", failures); return 1; }
   printf("all render tests passed\n");
   return 0;
