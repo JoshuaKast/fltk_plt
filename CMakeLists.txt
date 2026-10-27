@@ -33,7 +33,8 @@ add_library(fltk_plot
   src/Fl_Plot.cxx
   src/Fl_Plot_Items.cxx
   src/Fl_Plot_Text.cxx
-  src/Fl_Plot_Algo.cxx)
+  src/Fl_Plot_Algo.cxx
+  src/Fl_Plot_Window.cxx)
 target_include_directories(fltk_plot PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -46,7 +47,7 @@ else()
 endif()
 
 if(FL_PLOT_BUILD_EXAMPLES)
-  foreach(ex demo bigdata custom_bindings)
+  foreach(ex demo bigdata custom_bindings plot_window)
     add_executable(${ex} examples/${ex}.cxx)
     target_link_libraries(${ex} PRIVATE fltk_plot)
   endforeach()
@@ -70,4 +71,5 @@ endif()
 
 install(TARGETS fltk_plot ARCHIVE DESTINATION lib LIBRARY DESTINATION lib)
 install(FILES include/Fl_Plot.H include/Fl_Plot_Algo.H include/Fl_Plot_Text.H
+              include/Fl_Plot_Window.H
         DESTINATION include)

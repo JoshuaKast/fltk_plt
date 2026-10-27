@@ -466,6 +466,8 @@ public:
   void ylim(double lo, double hi);
   void xlim_auto();                  // autoscale x again
   void ylim_auto();
+  bool xlim_is_auto() const { return xauto_; }
+  bool ylim_is_auto() const { return yauto_; }
   double xmin() const { return vx0_; }
   double xmax() const { return vx1_; }
   double ymin() const { return vy0_; }
@@ -524,6 +526,9 @@ public:
   Fl_RGB_Image *image();
   // Save as PNG. Returns 0 on success.
   int save_png(const char *filename);
+  // Ask for a file name with a native file chooser, then save_png() it.
+  // Returns 0 if saved, 1 if cancelled, -1 on error (after an alert).
+  int save_png_dialog();
 
   // ---- Fl_Widget -------------------------------------------------------
   void draw();
