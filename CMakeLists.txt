@@ -47,7 +47,7 @@ else()
 endif()
 
 if(FL_PLOT_BUILD_EXAMPLES)
-  foreach(ex demo bigdata custom_bindings plot_window)
+  foreach(ex demo bigdata custom_bindings plot_window scales)
     add_executable(${ex} examples/${ex}.cxx)
     target_link_libraries(${ex} PRIVATE fltk_plot)
   endforeach()

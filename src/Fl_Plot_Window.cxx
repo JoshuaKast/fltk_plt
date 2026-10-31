@@ -21,7 +21,8 @@ static const int MENU_H = 25;
 // menu actions, stored in each item's user_data
 enum {
   A_SAVE, A_CLOSE,
-  A_RESET, A_ZOOM_IN, A_ZOOM_OUT, A_GRID, A_GRID_MINOR, A_LEGEND, A_TOOLBAR,
+  A_RESET, A_ZOOM_IN, A_ZOOM_OUT, A_GRID, A_GRID_MINOR, A_LEGEND, A_LOG_X, A_LOG_Y,
+  A_TOOLBAR,
   A_ZOOM_MODE, A_PAN_MODE, A_AXES,
   A_HELP
 };
@@ -53,6 +54,8 @@ void Fl_Plot_Window::init(const char *title) {
   menu_->add("&View/&Grid", 'g', ACT(A_GRID), FL_MENU_TOGGLE);
   menu_->add("&View/&Minor grid", 0, ACT(A_GRID_MINOR), FL_MENU_TOGGLE);
   menu_->add("&View/&Legend", 'l', ACT(A_LEGEND), FL_MENU_TOGGLE | FL_MENU_DIVIDER);
+  menu_->add("&View/Log &x axis", 0, ACT(A_LOG_X), FL_MENU_TOGGLE);
+  menu_->add("&View/Log &y axis", 0, ACT(A_LOG_Y), FL_MENU_TOGGLE | FL_MENU_DIVIDER);
   menu_->add("&View/&Toolbar", 0, ACT(A_TOOLBAR), FL_MENU_TOGGLE);
   menu_->add("&Tools/&Zoom box", 'z', ACT(A_ZOOM_MODE), FL_MENU_RADIO);
   menu_->add("&Tools/&Pan", 'p', ACT(A_PAN_MODE), FL_MENU_RADIO | FL_MENU_DIVIDER);
@@ -113,6 +116,8 @@ void Fl_Plot_Window::sync_menu() {
       case A_GRID:       on = plot_->grid(); break;
       case A_GRID_MINOR: on = plot_->grid_minor(); break;
       case A_LEGEND:     on = plot_->legend(); break;
+      case A_LOG_X:      on = plot_->xscale() == FL_PLOT_LOG; break;
+      case A_LOG_Y:      on = plot_->yscale() == FL_PLOT_LOG; break;
       case A_TOOLBAR:    on = plot_->toolbar(); break;
       case A_ZOOM_MODE:  on = plot_->drag_mode(FL_LEFT_MOUSE) == FL_PLOT_DRAG_ZOOM_BOX; break;
       case A_PAN_MODE:   on = plot_->drag_mode(FL_LEFT_MOUSE) == FL_PLOT_DRAG_PAN; break;
@@ -134,6 +139,12 @@ void Fl_Plot_Window::menu_cb(Fl_Widget *w, void *data) {
     case A_GRID:       p->grid(!p->grid()); break;
     case A_GRID_MINOR: p->grid_minor(!p->grid_minor()); break;
     case A_LEGEND:     p->legend(!p->legend()); break;
+    case A_LOG_X:
+      p->xscale(p->xscale() == FL_PLOT_LOG ? FL_PLOT_LINEAR : FL_PLOT_LOG);
+      break;
+    case A_LOG_Y:
+      p->yscale(p->yscale() == FL_PLOT_LOG ? FL_PLOT_LINEAR : FL_PLOT_LOG);
+      break;
     case A_TOOLBAR:    p->toolbar(!p->toolbar()); break;
     case A_ZOOM_MODE:  p->drag_mode(FL_LEFT_MOUSE, FL_PLOT_DRAG_ZOOM_BOX); break;
     case A_PAN_MODE:   p->drag_mode(FL_LEFT_MOUSE, FL_PLOT_DRAG_PAN); break;
@@ -169,7 +180,7 @@ struct Axes_Dialog {
   Fl_Double_Window *win;
   Fl_Input *title, *xlabel, *ylabel;
   Fl_Float_Input *lim[4];            // x min, x max, y min, y max
-  Fl_Check_Button *xauto, *yauto;
+  Fl_Check_Button *xauto, *yauto, *xlog, *ylog;
   double v[4];
   bool ok;
 };
@@ -204,6 +215,10 @@ static void axes_ok_cb(Fl_Widget *, void *data) {
       fl_alert("The %s minimum must be less than the maximum.", name);
       return;
     }
+    if ((a == 0 ? d->xlog : d->ylog)->value() && !(d->v[2 * a] > 0)) {
+      fl_alert("The %s limits must be positive on a log axis.", name);
+      return;
+    }
   }
   d->ok = true;
   d->win->hide();
@@ -214,23 +229,27 @@ static void axes_cancel_cb(Fl_Widget *, void *data) {
 }
 
 void Fl_Plot_Window::axes_dialog() {
-  const int W = 380, H = 220;
+  const int W = 440, H = 220;
   Axes_Dialog d;
   d.ok = false;
   Fl_Double_Window dlg(W, H, "Axes");
   d.win = &dlg;
-  d.title = new Fl_Input(80, 10, 290, 25, "Title");
-  d.xlabel = new Fl_Input(80, 40, 290, 25, "X label");
-  d.ylabel = new Fl_Input(80, 70, 290, 25, "Y label");
+  d.title = new Fl_Input(80, 10, W - 90, 25, "Title");
+  d.xlabel = new Fl_Input(80, 40, W - 90, 25, "X label");
+  d.ylabel = new Fl_Input(80, 70, W - 90, 25, "Y label");
   d.lim[0] = new Fl_Float_Input(80, 110, 100, 25, "X limits");
   d.lim[1] = new Fl_Float_Input(190, 110, 100, 25);
-  d.xauto = new Fl_Check_Button(300, 110, 70, 25, "auto");
+  d.xauto = new Fl_Check_Button(300, 110, 60, 25, "auto");
   d.lim[2] = new Fl_Float_Input(80, 140, 100, 25, "Y limits");
   d.lim[3] = new Fl_Float_Input(190, 140, 100, 25);
-  d.yauto = new Fl_Check_Button(300, 140, 70, 25, "auto");
-  Fl_Button *cancel = new Fl_Button(200, 185, 80, 25, "Cancel");
-  Fl_Return_Button *ok = new Fl_Return_Button(290, 185, 80, 25, "OK");
+  d.yauto = new Fl_Check_Button(300, 140, 60, 25, "auto");
+  Fl_Button *cancel = new Fl_Button(W - 180, 185, 80, 25, "Cancel");
+  Fl_Return_Button *ok = new Fl_Return_Button(W - 90, 185, 80, 25, "OK");
+  d.xlog = new Fl_Check_Button(365, 110, 65, 25, "log");
+  d.ylog = new Fl_Check_Button(365, 140, 65, 25, "log");
   dlg.end();
+  d.xlog->tooltip("Logarithmic x axis");
+  d.ylog->tooltip("Logarithmic y axis");
   d.lim[0]->tooltip("minimum");
   d.lim[1]->tooltip("maximum");
   d.lim[2]->tooltip("minimum");
@@ -244,11 +263,12 @@ void Fl_Plot_Window::axes_dialog() {
   double cur[4] = { plot_->xmin(), plot_->xmax(), plot_->ymin(), plot_->ymax() };
   std::string start[4];
   for (int i = 0; i < 4; i++) {
-    char buf[40];
-    snprintf(buf, sizeof(buf), "%.10g", cur[i]);
-    d.lim[i]->value(buf);
-    start[i] = buf;
+    // exact, so that a narrow range far from zero (1e9 + 0.001) survives
+    start[i] = Fl_Plot_Algo::format_exact(cur[i], 10);
+    d.lim[i]->value(start[i].c_str());
   }
+  d.xlog->value(plot_->xscale() == FL_PLOT_LOG);
+  d.ylog->value(plot_->yscale() == FL_PLOT_LOG);
   d.xauto->value(plot_->xlim_is_auto());
   d.yauto->value(plot_->ylim_is_auto());
   d.xauto->callback(axes_auto_cb, &d);
@@ -269,6 +289,12 @@ void Fl_Plot_Window::axes_dialog() {
   // Touch the limits only if the user changed them, so that OK on an
   // untouched dialog keeps the current zoom.
   bool limits = false;
+  for (int a = 0; a < 2; a++) {
+    Fl_Plot_Scale s = (a == 0 ? d.xlog : d.ylog)->value() ? FL_PLOT_LOG : FL_PLOT_LINEAR;
+    if (s == (a == 0 ? plot_->xscale() : plot_->yscale())) continue;
+    if (a == 0) plot_->xscale(s); else plot_->yscale(s);
+    limits = true;
+  }
   for (int a = 0; a < 2; a++) {
     bool want_auto = (a == 0 ? d.xauto : d.yauto)->value() != 0;
     bool was_auto = a == 0 ? plot_->xlim_is_auto() : plot_->ylim_is_auto();

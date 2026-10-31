@@ -15,8 +15,11 @@ replace matplotlib or produce print-quality figures.
   reference lines, and boxed or rotated text annotations.
 * Any number of items in one set of axes, plus a legend, major and minor
   grid, major and minor ticks with automatic "nice" tick labels (common
-  `×10^n` factor for very large or small values), a title, an xlabel and
+  `×10^n` factor for very large or small values, and an offset such as
+  `+1.73×10^9` for a small range far from zero), a title, an xlabel and
   a ylabel.
+* Linear or log10 axes, each set separately (`xscale()`, `yscale()`, or
+  `semilogx()`, `semilogy()`, `loglog()` as in MATLAB).
 * Math text in every label: `"$\alpha_i^2$ (\mu V)"`, with greek letters,
   sub/superscripts, symbols, accents and operator names.
 * Large data: a 1,000,000-point line over 300 px sends about 1,200
@@ -50,6 +53,7 @@ ctest --test-dir build      # the render test runs under xvfb-run when it is ava
 ./build/bigdata             # 1.2 million points, prints the redraw time
 ./build/custom_bindings     # everything wired by hand
 ./build/plot_window         # Fl_Plot_Window, blocking (add --app for pop-up windows)
+./build/scales              # log axes, and a small range far from zero
 ```
 
 The library is five source files (`src/`) and four headers (`include/`).
@@ -106,6 +110,7 @@ followed by `add()`. Either way the plot owns the item and deletes it.
 | `circle(cx, cy, r, fill, units)` | `Fl_Plot_Circle` | `FL_PLOT_DATA` radius (an ellipse when the x and y scales differ) or `FL_PLOT_PIXELS` |
 | `axhline(y)`, `axvline(x)` | `Fl_Plot_Ref_Line` | infinite reference lines, not autoscaled |
 | `text(x, y, str, coords)` | `Fl_Plot_Annotation` | align, angle, pixel offset, font, optional box |
+| `semilogx(x, y, n, fmt)`, `semilogy(...)`, `loglog(...)` | `Fl_Plot_Line` | `plot()` that also sets log x, log y, or both |
 
 Items are owned by the plot. `remove(item)` deletes one, and deleting an
 item yourself also takes it out of its plot. `add()` with an item from
@@ -127,6 +132,47 @@ Limits: `xlim(a, b)` and `ylim(a, b)` fix an axis, and `xlim_auto()` and
 `ylim_auto()` turn autoscaling back on (`xlim_is_auto()` and
 `ylim_is_auto()` report it). `view(x0, x1, y0, y1)` sets the
 visible region. `xmin()` and the related calls read the current view.
+The view can be as narrow as about 1.5×10⁻¹⁴ of its distance from zero
+(64 ulps), so a Unix-time axis zooms down to tens of microseconds.
+
+## Log axes and offsets
+
+![scales](docs/scales.png)
+
+`xscale(FL_PLOT_LOG)` and `yscale(FL_PLOT_LOG)` make an axis log10
+(`FL_PLOT_LINEAR` switches back, and changing a scale resets the view).
+On a log axis:
+
+* Ticks are powers of ten labelled `10^k` with minor ticks at 2..9×10^k,
+  or every 2nd, 5th, 10th... decade for long ranges. Under two decades
+  they become 1-2-5 ticks (5, 10, 20, 50), and for very short ranges plain
+  "nice" linear ticks.
+* Autoscaling fits the positive data. Values ≤ 0 are clipped to a point
+  far below the axis (matplotlib's default), so a line through a zero
+  dives off the bottom of the axes and a fill down to 0 fills to the
+  bottom. NaN still breaks a line.
+* Zoom, pan and the zoom box work in log space: zooming keeps the
+  geometric center, and panning keeps the ratio of the limits. Limits
+  ≤ 0 given to `xlim()` or `view()` are replaced by the autoscaled ones.
+* Large data keeps its fast paths: log10 is monotonic, so the min/max
+  tree built over the raw data still gives each pixel column's extremes.
+
+When the visible range is small compared with its distance from zero
+(the labels would share four or more leading digits), the tick labels
+show the distance from a round offset, and the offset is shown once in the
+corner of the axis, as in matplotlib: an axis over 50 ms of Unix time
+reads `0.00 0.02 0.04` with `+1.73×10^9`. The offset is the roundest
+number that keeps the labels within ten times the range, and the ticks are
+computed relative to it, so they stay exact. The toolbar readout prints as
+many digits as one pixel resolves, and the axes dialog of
+`Fl_Plot_Window` shows limits exactly.
+
+For custom items: `Fl_Plot_Algo::Xform` stores the limits in scale
+coordinates (log10 units on a log axis), and `xf.data_sx(x)` /
+`xf.data_sy(y)` map data to the screen on either kind of axis. Items that
+are drawn from their own data should use those instead of `sx()`/`sy()`.
+Override `min_positive()` too if your item overrides `bounds()` and should
+autoscale log axes.
 
 Color cycle: new items take their colors in turn from the tab10 palette
 (`Fl_Plot::cycle_color(i)`).
@@ -204,8 +250,8 @@ w->show();
 | Menu | Items |
 |---|---|
 | File | Save as PNG… (Ctrl/Cmd+S), Close (Ctrl/Cmd+W) |
-| View | Reset view (`r`), Zoom in (`+`), Zoom out (`-`), Grid (`g`), Minor grid, Legend (`l`), Toolbar |
-| Tools | Zoom box (`z`) / Pan (`p`) for left drag, Axes… (Ctrl/Cmd+E): title, labels and limits |
+| View | Reset view (`r`), Zoom in (`+`), Zoom out (`-`), Grid (`g`), Minor grid, Legend (`l`), Log x axis, Log y axis, Toolbar |
+| Tools | Zoom box (`z`) / Pan (`p`) for left drag, Axes… (Ctrl/Cmd+E): title, labels, limits and log scales |
 | Help | Mouse and keys… |
 
 Other calls: `run()` (safe with `delete_on_close(true)`), `close()`,
@@ -297,9 +343,12 @@ and legend use cases with no new dependency and no font files to ship.
   by blending with the axes background, because FLTK has no alpha fill.
   Overlapping translucent items therefore cover each other instead of
   mixing.
-* Linear axes only for now. Log axes, a second y axis, images and
-  colorbars, and date axes are natural next steps. The transform is
-  isolated in `Fl_Plot_Algo::Xform`, so log scaling is a contained change.
+* Axes are linear or log10. A second y axis, symlog, images and
+  colorbars, and date axes are natural next steps. Scales live in
+  `Fl_Plot_Algo::Xform`, so another monotonic scale is a contained change.
+* On log axes, polygon edges are straight lines between the transformed
+  vertices, and a circle with a data-unit radius is the data-space circle
+  seen through the log scale, so it looks distorted.
 * One `Fl_Plot` holds one set of axes. For subplots, use several widgets
   (for example in an `Fl_Flex` or `Fl_Grid`).
 * `Fl_Plot` derives from `Fl_Group` only to host its toolbar buttons.

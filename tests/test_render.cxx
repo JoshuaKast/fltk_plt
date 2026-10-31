@@ -86,7 +86,7 @@ int main(int argc, char **argv) {
   std::string dir = argc > 1 ? argv[1] : ".";
   Fl::visual(FL_RGB);
   Fl_Double_Window win(1300, 900, "render test");
-  Fl_Plot *p[6];
+  Fl_Plot *p[8];
   p[0] = new Fl_Plot(0, 0, 640, 440);
   p[1] = new Fl_Plot(640, 0, 640, 440);
   p[2] = new Fl_Plot(0, 440, 640, 440);
@@ -105,9 +105,14 @@ int main(int argc, char **argv) {
   demo_bigdata(p[4]);
   p[5] = new Fl_Plot(0, 0, 700, 420);
   demo_mathtext(p[5]);
+  p[6] = new Fl_Plot(0, 0, 600, 460);
+  demo_log(p[6]);
+  p[7] = new Fl_Plot(0, 0, 600, 460);
+  demo_offset(p[7]);
 
-  const char *names[] = { "lines", "fill", "shapes", "markers", "bigdata", "mathtext" };
-  for (int i = 0; i < 6; i++) {
+  const char *names[] = { "lines", "fill", "shapes", "markers", "bigdata", "mathtext", "log",
+                          "offset" };
+  for (int i = 0; i < 8; i++) {
     std::string f = dir + "/" + names[i] + ".png";
     CHECK(p[i]->save_png(f.c_str()) == 0);
     Fl_RGB_Image *img = p[i]->image();
@@ -224,6 +229,70 @@ int main(int argc, char **argv) {
     delete img;
   }
 
+  // ---- log axes ----
+  {
+    Fl_Plot *g = p[6];
+    CHECK(g->xscale() == FL_PLOT_LOG && g->yscale() == FL_PLOT_LOG);
+    // autoscaled to the positive data, with a margin
+    CHECK(g->xmin() > 0.05 && g->xmin() < 0.1 && g->xmax() > 1e5 && g->xmax() < 2e5);
+    CHECK(g->ymin() > 0);
+    // round trip through the log transform
+    double sx, sy, dx, dy;
+    g->data_to_screen(1000, 0.01, sx, sy);
+    g->screen_to_data(sx, sy, dx, dy);
+    CHECK(fabs(dx / 1000 - 1) < 1e-9 && fabs(dy / 0.01 - 1) < 1e-9);
+    // decades are evenly spaced on screen
+    double s1, s2, s3, t;
+    g->data_to_screen(1, 1, s1, t);
+    g->data_to_screen(10, 1, s2, t);
+    g->data_to_screen(100, 1, s3, t);
+    CHECK(fabs((s2 - s1) - (s3 - s2)) < 1e-6);
+    // zoom keeps the geometric center, pan keeps the ratio
+    double c = sqrt(g->xmin() * g->xmax()), ratio = g->xmax() / g->xmin();
+    g->zoom_in();
+    CHECK(fabs(sqrt(g->xmin() * g->xmax()) / c - 1) < 1e-9);
+    ratio = g->xmax() / g->xmin();
+    g->pan_pixels(-120, 0);
+    CHECK(g->xmin() > c / sqrt(ratio) * 1.01);
+    CHECK(fabs(g->xmax() / g->xmin() / ratio - 1) < 1e-9);
+    delete g->image();
+    // limits <= 0 are replaced on a log axis
+    g->xlim(0, 1e3);
+    CHECK(g->xmin() > 0 && g->xmax() == 1e3);
+    g->view(-1, 10, -5, -1);
+    CHECK(g->xmin() > 0 && g->ymin() > 0 && g->ymax() > g->ymin());
+    g->xlim_auto();
+    g->reset_zoom();
+    // back to linear and log again
+    g->xscale(FL_PLOT_LINEAR);
+    CHECK(g->xscale() == FL_PLOT_LINEAR && g->xmin() < 0);
+    delete g->image();
+    g->xscale(FL_PLOT_LOG);
+    CHECK(g->xmin() > 0);
+
+    // no positive data at all: a default decade, no crash
+    Fl_Plot e(0, 0, 400, 300);
+    double zx[3] = { 1, 2, 3 }, zy[3] = { 0, -1, -2 };
+    e.semilogy(zx, zy, 3);
+    delete e.image();
+    CHECK(e.ymin() > 0 && e.ymax() > e.ymin());
+    for (int i = 0; i < 2000; i++) e.zoom_out();
+    for (int i = 0; i < 4000; i++) e.zoom_in();
+    delete e.image();
+    CHECK(e.ymin() > 0 && e.ymax() > e.ymin());
+  }
+
+  // ---- small range, large offset ----
+  {
+    Fl_Plot *o = p[7];
+    CHECK(o->xmax() - o->xmin() < 0.06 && o->xmin() > 1.7e9);
+    // zoom to 0.1 ms of a Unix time axis: not widened, still drawn
+    o->zoom_to(1730000000.01, 1730000000.0101, 101324.98, 101325.02);
+    CHECK(fabs((o->xmax() - o->xmin()) - 1e-4) < 1e-6);
+    delete o->image();
+    CHECK(((Fl_Plot_Line *)o->item(0))->drawn_vertices() >= 10);
+  }
+
   // ---- robustness ----
   {
     Fl_Plot r(0, 0, 400, 300);
@@ -307,6 +376,12 @@ int main(int argc, char **argv) {
     CHECK(pick(&w, "&View/&Toolbar") && a->toolbar());
     a->zoom_in();
     CHECK(pick(&w, "&View/&Reset view") && a->xmin() < 0.01);
+    const Fl_Menu_Item *logy = w.menubar()->find_item("&View/Log &y axis");
+    CHECK(pick(&w, "&View/Log &y axis") && a->yscale() == FL_PLOT_LOG);
+    CHECK(logy && logy->value());
+    CHECK(a->ymin() > 0);
+    CHECK(pick(&w, "&View/Log &y axis") && a->yscale() == FL_PLOT_LINEAR);
+    CHECK(logy && !logy->value());
 
     // axes dialog
     Fl::add_timeout(0.05, fill_axes_dialog);

@@ -34,7 +34,8 @@ Fl_Plot::Fl_Plot(int X, int Y, int W, int H, const char *L)
     xfmt_(0), yfmt_(0), xfmt_data_(0), yfmt_data_(0),
     legend_pos_(FL_PLOT_LEGEND_NE),
     vx0_(0), vx1_(1), vy0_(0), vy1_(1), ux0_(0), ux1_(1), uy0_(0), uy1_(1),
-    xauto_(true), yauto_(true), view_set_(false), margin_(0.05), zoom_step_(1.5),
+    xauto_(true), yauto_(true), view_set_(false), xlog_(false), ylog_(false),
+    margin_(0.05), zoom_step_(1.5),
     top_(Y), bottom_(Y + H), left_(X), right_(X + W),
     wheel_zoom_(false), dblclick_reset_(false), keyboard_(false),
     drag_kind_(0), drag_axes_(FL_PLOT_XY), last_x_(0), last_y_(0),
@@ -230,6 +231,22 @@ Fl_Plot_Annotation *Fl_Plot::text(double x, double y, const char *s, Fl_Plot_Coo
   return a;
 }
 
+Fl_Plot_Line *Fl_Plot::semilogx(const double *x, const double *y, size_t n, const char *fmt) {
+  xscale(FL_PLOT_LOG);
+  return plot(x, y, n, fmt);
+}
+
+Fl_Plot_Line *Fl_Plot::semilogy(const double *x, const double *y, size_t n, const char *fmt) {
+  yscale(FL_PLOT_LOG);
+  return plot(x, y, n, fmt);
+}
+
+Fl_Plot_Line *Fl_Plot::loglog(const double *x, const double *y, size_t n, const char *fmt) {
+  xscale(FL_PLOT_LOG);
+  yscale(FL_PLOT_LOG);
+  return plot(x, y, n, fmt);
+}
+
 // ---------------------------------------------------------------------------
 // Limits
 // ---------------------------------------------------------------------------
@@ -241,13 +258,62 @@ static void sanitize_range(double &a, double &b) {
   const double big = 1e300;
   a = std::max(a, -big);
   b = std::min(b, big);
+  // the smallest span is ~64 ulps of the larger limit: the transform works
+  // on x - x0, which is exact, so even this is drawn without jitter
   double m = std::max(fabs(a), fabs(b));
-  double minspan = std::max(m * 1e-12, 1e-300);
+  double minspan = std::max(m * 1.5e-14, 1e-300);
   if (b - a < minspan) {
     double c = (a + b) / 2, d = m > 0 ? m * 0.05 : 0.5;
     if (b - a == 0) { a = c - d; b = c + d; }
     else { a = c - minspan / 2; b = c + minspan / 2; }
   }
+}
+
+// sanitize_range() for limits in scale coordinates. On a log axis the
+// limits stay within 1e-300..1e300, and at least ~1e-13 apart (in log10
+// units, more for large exponents, where log10 itself is less precise).
+static void sanitize_scaled(double &a, double &b, bool log) {
+  sanitize_range(a, b);
+  if (!log) return;
+  a = std::max(a, -300.0);
+  b = std::min(b, 300.0);
+  double c = (a + b) / 2, minspan = 1e-13 * std::max(1.0, fabs(c));
+  if (b - a < minspan) {
+    c = std::max(-299.0, std::min(299.0, c));
+    a = c - minspan / 2; b = c + minspan / 2;
+  }
+}
+
+// sanitize_range() for data limits on a linear or log axis (both > 0).
+static void sanitize_axis(double &a, double &b, bool log) {
+  if (!log) { sanitize_range(a, b); return; }
+  if (a > b) std::swap(a, b);
+  if (!(b > 0) || !is_finite(b)) { a = 1; b = 10; }
+  else if (!(a > 0)) a = b / 1000;
+  double la = log10(a), lb = log10(b), oa = la, ob = lb;
+  sanitize_scaled(la, lb, true);
+  // keep the caller's exact values unless they had to change
+  if (la != oa) a = pow(10.0, la);
+  if (lb != ob) b = pow(10.0, lb);
+}
+
+// Autoscaled limits for one axis from the data range [lo, hi] (lo is the
+// smallest positive value on a log axis); the margin is added in scale space.
+static void auto_axis(double lo, double hi, bool log, double margin, double &a, double &b) {
+  if (log) {
+    if (!(hi > 0) || !is_finite(hi)) { lo = 1; hi = 10; }
+    else if (!(lo > 0) || !(lo <= hi) || !is_finite(lo)) lo = hi / 10;
+  } else if (!(lo <= hi)) {
+    lo = 0; hi = 1;
+  }
+  a = scale_fwd(lo, log);
+  b = scale_fwd(hi, log);
+  sanitize_scaled(a, b, log);
+  double m = (b - a) * margin;
+  a -= m; b += m;
+  sanitize_scaled(a, b, log);
+  a = scale_inv(a, log);
+  b = scale_inv(b, log);
 }
 
 void Fl_Plot::compute_auto_limits(double &x0, double &x1, double &y0, double &y1) const {
@@ -258,54 +324,76 @@ void Fl_Plot::compute_auto_limits(double &x0, double &x1, double &y0, double &y1
     if (!it->visible() || !it->autoscale()) continue;
     double a, b, c, d;
     if (!it->bounds(a, b, c, d)) continue;
+    if (xlog_ || ylog_) {
+      // a log axis starts at the smallest positive value
+      double px = 0, py = 0;
+      it->min_positive(px, py);
+      if (xlog_) a = px > 0 ? px : inf;
+      if (ylog_) c = py > 0 ? py : inf;
+    }
     x0 = std::min(x0, a); x1 = std::max(x1, b);
     y0 = std::min(y0, c); y1 = std::max(y1, d);
   }
-  if (!(x0 <= x1)) { x0 = 0; x1 = 1; }
-  if (!(y0 <= y1)) { y0 = 0; y1 = 1; }
-  sanitize_range(x0, x1);
-  sanitize_range(y0, y1);
-  double mx = (x1 - x0) * margin_, my = (y1 - y0) * margin_;
-  x0 -= mx; x1 += mx; y0 -= my; y1 += my;
-  sanitize_range(x0, x1);
-  sanitize_range(y0, y1);
+  auto_axis(x0, x1, xlog_, margin_, x0, x1);
+  auto_axis(y0, y1, ylog_, margin_, y0, y1);
+}
+
+// Usable limits for one axis: on a log axis, an end <= 0 is replaced by the
+// autoscaled one.
+void Fl_Plot::clean_limits(int axis, double &lo, double &hi) const {
+  bool log = axis == FL_PLOT_X ? xlog_ : ylog_;
+  if (log && !(lo > 0 && hi > 0)) {
+    double x0, x1, y0, y1;
+    compute_auto_limits(x0, x1, y0, y1);
+    double alo = axis == FL_PLOT_X ? x0 : y0, ahi = axis == FL_PLOT_X ? x1 : y1;
+    if (lo > hi) std::swap(lo, hi);
+    if (!(hi > 0)) hi = ahi;
+    if (!(lo > 0)) lo = alo < hi ? alo : hi / 10;
+  }
+  sanitize_axis(lo, hi, log);
+}
+
+void Fl_Plot::sync_xform() {
+  xf_.xlog = xlog_; xf_.ylog = ylog_;
+  xf_.x0 = scale_fwd(vx0_, xlog_); xf_.x1 = scale_fwd(vx1_, xlog_);
+  xf_.y0 = scale_fwd(vy0_, ylog_); xf_.y1 = scale_fwd(vy1_, ylog_);
 }
 
 void Fl_Plot::apply_autoscale() {
   if (view_set_) return;
   double x0, x1, y0, y1;
   compute_auto_limits(x0, x1, y0, y1);
-  if (!xauto_) { x0 = ux0_; x1 = ux1_; }
-  if (!yauto_) { y0 = uy0_; y1 = uy1_; }
+  if (!xauto_) { x0 = ux0_; x1 = ux1_; clean_limits(FL_PLOT_X, x0, x1); }
+  if (!yauto_) { y0 = uy0_; y1 = uy1_; clean_limits(FL_PLOT_Y, y0, y1); }
   bool changed = x0 != vx0_ || x1 != vx1_ || y0 != vy0_ || y1 != vy1_;
   vx0_ = x0; vx1_ = x1; vy0_ = y0; vy1_ = y1;
   if (changed && view_cb_) view_cb_(this, view_data_);
 }
 
 void Fl_Plot::set_view(double x0, double x1, double y0, double y1, bool notify) {
-  sanitize_range(x0, x1);
-  sanitize_range(y0, y1);
+  clean_limits(FL_PLOT_X, x0, x1);
+  clean_limits(FL_PLOT_Y, y0, y1);
   vx0_ = x0; vx1_ = x1; vy0_ = y0; vy1_ = y1;
   view_set_ = true;
-  xf_.x0 = x0; xf_.x1 = x1; xf_.y0 = y0; xf_.y1 = y1;
+  sync_xform();
   if (notify && view_cb_) view_cb_(this, view_data_);
   redraw();
 }
 
 void Fl_Plot::xlim(double lo, double hi) {
-  sanitize_range(lo, hi);
+  clean_limits(FL_PLOT_X, lo, hi);
   ux0_ = lo; ux1_ = hi; xauto_ = false;
   vx0_ = lo; vx1_ = hi;
-  xf_.x0 = lo; xf_.x1 = hi;
+  sync_xform();
   if (view_cb_) view_cb_(this, view_data_);
   redraw();
 }
 
 void Fl_Plot::ylim(double lo, double hi) {
-  sanitize_range(lo, hi);
+  clean_limits(FL_PLOT_Y, lo, hi);
   uy0_ = lo; uy1_ = hi; yauto_ = false;
   vy0_ = lo; vy1_ = hi;
-  xf_.y0 = lo; xf_.y1 = hi;
+  sync_xform();
   if (view_cb_) view_cb_(this, view_data_);
   redraw();
 }
@@ -313,30 +401,55 @@ void Fl_Plot::ylim(double lo, double hi) {
 void Fl_Plot::xlim_auto() { xauto_ = true; redraw(); }
 void Fl_Plot::ylim_auto() { yauto_ = true; redraw(); }
 
+void Fl_Plot::xscale(Fl_Plot_Scale s) {
+  if ((s == FL_PLOT_LOG) == xlog_) return;
+  xlog_ = s == FL_PLOT_LOG;
+  reset_zoom();
+}
+
+void Fl_Plot::yscale(Fl_Plot_Scale s) {
+  if ((s == FL_PLOT_LOG) == ylog_) return;
+  ylog_ = s == FL_PLOT_LOG;
+  reset_zoom();
+}
+
 void Fl_Plot::view(double x0, double x1, double y0, double y1) { set_view(x0, x1, y0, y1); }
 
 void Fl_Plot::reset_zoom() {
   view_set_ = false;
   apply_autoscale();
-  xf_.x0 = vx0_; xf_.x1 = vx1_; xf_.y0 = vy0_; xf_.y1 = vy1_;
+  sync_xform();
   if (view_cb_) view_cb_(this, view_data_);
   redraw();
+}
+
+// Scale [a, b] by f about c, in scale coordinates (log10 on a log axis).
+static void zoom_axis(double &a, double &b, double c, double f, bool log) {
+  if (log && !(c > 0)) c = sqrt(a) * sqrt(b);   // center outside a log axis
+  double la = scale_fwd(a, log), lb = scale_fwd(b, log), lc = scale_fwd(c, log);
+  a = scale_inv(lc + (la - lc) * f, log);
+  b = scale_inv(lc + (lb - lc) * f, log);
+}
+
+// Middle of [a, b] on the screen.
+static double mid(double a, double b, bool log) {
+  return log ? sqrt(a) * sqrt(b) : (a + b) / 2;
 }
 
 void Fl_Plot::zoom(double f, double cx, double cy, int axes) {
   if (!(f > 0) || !is_finite(f) || !is_finite(cx) || !is_finite(cy)) return;
   double x0 = vx0_, x1 = vx1_, y0 = vy0_, y1 = vy1_;
-  if (axes & FL_PLOT_X) { x0 = cx + (x0 - cx) * f; x1 = cx + (x1 - cx) * f; }
-  if (axes & FL_PLOT_Y) { y0 = cy + (y0 - cy) * f; y1 = cy + (y1 - cy) * f; }
+  if (axes & FL_PLOT_X) zoom_axis(x0, x1, cx, f, xlog_);
+  if (axes & FL_PLOT_Y) zoom_axis(y0, y1, cy, f, ylog_);
   set_view(x0, x1, y0, y1);
 }
 
 void Fl_Plot::zoom_in(int axes) {
-  zoom(1.0 / zoom_step_, (vx0_ + vx1_) / 2, (vy0_ + vy1_) / 2, axes);
+  zoom(1.0 / zoom_step_, mid(vx0_, vx1_, xlog_), mid(vy0_, vy1_, ylog_), axes);
 }
 
 void Fl_Plot::zoom_out(int axes) {
-  zoom(zoom_step_, (vx0_ + vx1_) / 2, (vy0_ + vy1_) / 2, axes);
+  zoom(zoom_step_, mid(vx0_, vx1_, xlog_), mid(vy0_, vy1_, ylog_), axes);
 }
 
 void Fl_Plot::zoom_to(double x0, double x1, double y0, double y1) {
@@ -344,10 +457,15 @@ void Fl_Plot::zoom_to(double x0, double x1, double y0, double y1) {
 }
 
 void Fl_Plot::pan_pixels(double dx, double dy, int axes) {
-  double sx = (vx1_ - vx0_) / xf_.pw, sy = (vy1_ - vy0_) / xf_.ph;
   double x0 = vx0_, x1 = vx1_, y0 = vy0_, y1 = vy1_;
-  if (axes & FL_PLOT_X) { x0 -= dx * sx; x1 -= dx * sx; }
-  if (axes & FL_PLOT_Y) { y0 += dy * sy; y1 += dy * sy; }
+  if (axes & FL_PLOT_X) {
+    double a = scale_fwd(x0, xlog_), b = scale_fwd(x1, xlog_), d = dx * (b - a) / xf_.pw;
+    x0 = scale_inv(a - d, xlog_); x1 = scale_inv(b - d, xlog_);
+  }
+  if (axes & FL_PLOT_Y) {
+    double a = scale_fwd(y0, ylog_), b = scale_fwd(y1, ylog_), d = dy * (b - a) / xf_.ph;
+    y0 = scale_inv(a + d, ylog_); y1 = scale_inv(b + d, ylog_);
+  }
   set_view(x0, x1, y0, y1);
 }
 
@@ -373,8 +491,8 @@ void Fl_Plot::zoom_box_end(bool apply) {
   int w = abs(box_x1_ - box_x0_), h = abs(box_y1_ - box_y0_);
   if (apply && (w >= 5 || h >= 5)) {
     double x0 = vx0_, x1 = vx1_, y0 = vy0_, y1 = vy1_;
-    if (w >= 5) { x0 = xf_.dx(box_x0_); x1 = xf_.dx(box_x1_); }
-    if (h >= 5) { y0 = xf_.dy(box_y0_); y1 = xf_.dy(box_y1_); }
+    if (w >= 5) { x0 = xf_.data_dx(box_x0_); x1 = xf_.data_dx(box_x1_); }
+    if (h >= 5) { y0 = xf_.data_dy(box_y0_); y1 = xf_.data_dy(box_y1_); }
     zoom_to(x0, x1, y0, y1);
   }
   redraw();
@@ -389,11 +507,11 @@ void Fl_Plot::axes_box(int &X, int &Y, int &W, int &H) const {
 }
 
 void Fl_Plot::data_to_screen(double x, double y, double &sx, double &sy) const {
-  sx = xf_.sx(x); sy = xf_.sy(y);
+  sx = xf_.data_sx(x); sy = xf_.data_sy(y);
 }
 
 void Fl_Plot::screen_to_data(double sx, double sy, double &x, double &y) const {
-  x = xf_.dx(sx); y = xf_.dy(sy);
+  x = xf_.data_dx(sx); y = xf_.data_dy(sy);
 }
 
 Fl_Plot_Region Fl_Plot::region(int sx, int sy) const {
@@ -414,9 +532,11 @@ void Fl_Plot::make_ticks(bool xaxis, double lo, double hi, int len_px, Axis_Tick
   Fl_Plot_Tick_Format fmt = xaxis ? xfmt_ : yfmt_;
   void *fdata = xaxis ? xfmt_data_ : yfmt_data_;
   int spacing = xaxis ? xtick_px_ : ytick_px_;
+  bool log = xaxis ? xlog_ : ylog_;
   int maxt = std::max(2, len_px / std::max(10, spacing));
   for (;;) {
-    compute_ticks(lo, hi, maxt, out.t);
+    if (log) compute_log_ticks(lo, hi, maxt, out.t);
+    else compute_ticks(lo, hi, maxt, out.t);
     if (!user.empty()) {
       out.t.major.clear();
       out.t.minor.clear();
@@ -435,12 +555,16 @@ void Fl_Plot::make_ticks(bool xaxis, double lo, double hi, int len_px, Axis_Tick
         out.labels.push_back(format_tick(out.t.major[i], out.t));
       }
     }
+    out.mult = fmt ? "" : format_multiplier(out.t);
     if (!xaxis || !user.empty() || maxt <= 2 || out.t.major.size() < 2) break;
     // shrink the tick count until x labels don't collide
     double maxw = 0;
     for (size_t i = 0; i < out.labels.size(); i++)
       maxw = std::max(maxw, Fl_Plot_Text::width(out.labels[i].c_str(), font_, fontsize_));
-    double px_step = out.t.step / (hi - lo) * len_px;
+    double px_step = 1e30, span = scale_fwd(hi, log) - scale_fwd(lo, log);
+    for (size_t i = 1; i < out.t.major.size(); i++)
+      px_step = std::min(px_step, (scale_fwd(out.t.major[i], log) -
+                                   scale_fwd(out.t.major[i - 1], log)) / span * len_px);
     if (maxw + 10 <= px_step) break;
     maxt--;
   }
@@ -492,7 +616,7 @@ void Fl_Plot::update_layout() {
   // y ticks determine the left margin; the exponent label needs space on top
   for (int pass = 0; pass < 2; pass++) {
     make_ticks(false, vy0_, vy1_, std::max(10, bottom - top), yt_);
-    if (yt_.t.exponent && top < y() + toolbar_h_ + th + 8) top = y() + toolbar_h_ + th + 8;
+    if (!yt_.mult.empty() && top < y() + toolbar_h_ + th + 8) top = y() + toolbar_h_ + th + 8;
   }
   if (xlabel_.empty()) {
     // reserve a row for the x exponent label if needed (checked below)
@@ -506,15 +630,16 @@ void Fl_Plot::update_layout() {
   make_ticks(true, vx0_, vx1_, std::max(10, right - left), xt_);
   if (!xt_.labels.empty()) {
     double lw = Fl_Plot_Text::width(xt_.labels.back().c_str(), font_, fontsize_);
-    double sx = left + (xt_.t.major.back() - vx0_) / (vx1_ - vx0_) * (right - left);
+    double sx = left + (scale_fwd(xt_.t.major.back(), xlog_) - scale_fwd(vx0_, xlog_)) /
+                       (scale_fwd(vx1_, xlog_) - scale_fwd(vx0_, xlog_)) * (right - left);
     if (sx + lw / 2 > x() + w() - 4) right -= (int)ceil(sx + lw / 2 - (x() + w() - 4));
   }
-  if (xt_.t.exponent && xlabel_.empty()) bottom -= th + 2;
+  if (!xt_.mult.empty() && xlabel_.empty()) bottom -= th + 2;
 
   if (right - left < 10) right = left + 10;
   if (bottom - top < 10) bottom = top + 10;
   top_ = top; bottom_ = bottom; left_ = left; right_ = right;
-  xf_.x0 = vx0_; xf_.x1 = vx1_; xf_.y0 = vy0_; xf_.y1 = vy1_;
+  sync_xform();
   xf_.px = left; xf_.py = top; xf_.pw = right - left; xf_.ph = bottom - top;
 }
 
@@ -531,12 +656,12 @@ void Fl_Plot::draw_grid(const Axis_Ticks &xt, const Axis_Ticks &yt) {
     const std::vector<double> &xv = minor ? xt.t.minor : xt.t.major;
     const std::vector<double> &yv = minor ? yt.t.minor : yt.t.major;
     for (size_t i = 0; i < xv.size(); i++) {
-      int sx = (int)floor(xf_.sx(xv[i]) + 0.5);
+      int sx = (int)floor(xf_.data_sx(xv[i]) + 0.5);
       if (sx <= left_ || sx >= right_) continue;
       fl_line(sx, top_, sx, bottom_ - 1);
     }
     for (size_t i = 0; i < yv.size(); i++) {
-      int sy = (int)floor(xf_.sy(yv[i]) + 0.5);
+      int sy = (int)floor(xf_.data_sy(yv[i]) + 0.5);
       if (sy <= top_ || sy >= bottom_ - 1) continue;
       fl_line(left_, sy, right_ - 1, sy);
     }
@@ -555,39 +680,36 @@ void Fl_Plot::draw_ticks(const Axis_Ticks &xt, const Axis_Ticks &yt) {
     const std::vector<double> &xv = minor ? xt.t.minor : xt.t.major;
     const std::vector<double> &yv = minor ? yt.t.minor : yt.t.major;
     for (size_t i = 0; i < xv.size(); i++) {
-      int sx = (int)floor(xf_.sx(xv[i]) + 0.5);
+      int sx = (int)floor(xf_.data_sx(xv[i]) + 0.5);
       if (sx < left_ || sx >= right_ + 1) continue;
       fl_line(sx, b, sx, b + dir * len);
     }
     for (size_t i = 0; i < yv.size(); i++) {
-      int sy = (int)floor(xf_.sy(yv[i]) + 0.5);
+      int sy = (int)floor(xf_.data_sy(yv[i]) + 0.5);
       if (sy < top_ - 1 || sy > bottom_) continue;
       fl_line(l, sy, l - dir * len, sy);
     }
   }
   int out_len = ticks_inside_ ? 0 : tick_len_;
   for (size_t i = 0; i < xt.t.major.size(); i++) {
-    double sx = floor(xf_.sx(xt.t.major[i]) + 0.5);
+    double sx = floor(xf_.data_sx(xt.t.major[i]) + 0.5);
     if (sx < left_ - 1 || sx > right_ + 1) continue;
     Fl_Plot_Text::draw(xt.labels[i].c_str(), sx, bottom_ + out_len + 2, font_, fontsize_,
                        0, FL_PLOT_HCENTER, FL_PLOT_TOP);
   }
   for (size_t i = 0; i < yt.t.major.size(); i++) {
-    double sy = floor(xf_.sy(yt.t.major[i]) + 0.5);
+    double sy = floor(xf_.data_sy(yt.t.major[i]) + 0.5);
     if (sy < top_ - 1 || sy > bottom_ + 1) continue;
     Fl_Plot_Text::draw(yt.labels[i].c_str(), left_ - out_len - 3, sy, font_, fontsize_,
                        0, FL_PLOT_RIGHT, FL_PLOT_VCENTER);
   }
-  char buf[64];
-  if (yt.t.exponent && yfmt_ == 0) {
-    snprintf(buf, sizeof(buf), "$\\times10^{%d}$", yt.t.exponent);
-    Fl_Plot_Text::draw(buf, left_, top_ - 3, font_, fontsize_, 0, FL_PLOT_LEFT, FL_PLOT_BOTTOM);
-  }
-  if (xt.t.exponent && xfmt_ == 0) {
+  if (!yt.mult.empty())
+    Fl_Plot_Text::draw(yt.mult.c_str(), left_, top_ - 3, font_, fontsize_, 0,
+                       FL_PLOT_LEFT, FL_PLOT_BOTTOM);
+  if (!xt.mult.empty()) {
     fl_font(font_, fontsize_);
-    snprintf(buf, sizeof(buf), "$\\times10^{%d}$", xt.t.exponent);
-    Fl_Plot_Text::draw(buf, right_, bottom_ + out_len + fl_height() + 4, font_, fontsize_,
-                       0, FL_PLOT_RIGHT, FL_PLOT_TOP);
+    Fl_Plot_Text::draw(xt.mult.c_str(), right_, bottom_ + out_len + fl_height() + 4, font_,
+                       fontsize_, 0, FL_PLOT_RIGHT, FL_PLOT_TOP);
   }
 }
 
@@ -783,9 +905,12 @@ void Fl_Plot::tb_cb(Fl_Widget *w, void *data) {
 void Fl_Plot::update_readout(int sx, int sy) {
   if (!toolbar_) return;
   if (region(sx, sy) == FL_PLOT_IN_AXES) {
-    double dx, dy;
+    // as many digits as one pixel resolves (more than 6 near a large offset)
+    double dx, dy, ex, ey;
     screen_to_data(sx, sy, dx, dy);
-    snprintf(readout_buf_, sizeof(readout_buf_), "x=%-11.6g y=%-11.6g", dx, dy);
+    screen_to_data(sx + 1, sy + 1, ex, ey);
+    snprintf(readout_buf_, sizeof(readout_buf_), "x=%-11s y=%-11s",
+             format_coord(dx, ex - dx).c_str(), format_coord(dy, ey - dy).c_str());
   } else {
     readout_buf_[0] = 0;
   }

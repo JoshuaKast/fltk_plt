@@ -60,6 +60,126 @@ static void test_ticks_extreme() {
   CHECK(t.major.size() >= 2 && t.major.size() < 20);
 }
 
+// a small range far from zero: labels show the distance from a round offset
+static void test_ticks_offset() {
+  Ticks t;
+  compute_ticks(1.7e9 - 1e-4, 1.7e9 + 1.1e-3, 4, t);
+  CHECK(t.offset == 1.7e9);
+  CHECK(near(t.step, 5e-4));
+  CHECK(t.major.size() == 3);
+  CHECK(format_tick(t.major[0], t) == "0.0000");
+  CHECK(format_tick(t.major[1], t) == "0.0005");
+  CHECK(format_multiplier(t) == "$+1.7\\times10^{9}$");
+  // the ticks are on round absolute values
+  for (size_t i = 0; i < t.major.size(); i++)
+    CHECK(fabs((t.major[i] - 1.7e9) / 5e-4 - floor((t.major[i] - 1.7e9) / 5e-4 + 0.5)) < 1e-3);
+
+  // negative values, labels straddling the offset
+  compute_ticks(-12345.6791, -12345.669, 5, t);
+  CHECK(t.offset == -12346);
+  CHECK(format_multiplier(t) == "$\xE2\x88\x92" "12346$");
+  CHECK(format_tick(t.major[0], t) == "0.3225");   // step 0.0025
+
+  // plain offsets when they are short
+  compute_ticks(101324.98, 101325.02, 5, t);
+  CHECK(t.offset == 101325);
+  CHECK(format_multiplier(t) == "$+101325$");
+  compute_ticks(1e-20, 1e-20 + 1e-25, 5, t);
+  CHECK(format_multiplier(t) == "$\\times10^{-25}\\;+1\\times10^{-20}$");
+
+  // offset and a common factor together
+  compute_ticks(0.5, 0.5 + 1.1e-5, 6, t);
+  CHECK(t.offset == 0.5 && t.exponent == -5);
+  CHECK(format_multiplier(t) == "$\\times10^{-5}\\;+0.5$");
+
+  // ordinary ranges get no offset
+  compute_ticks(1000, 1001, 5, t);
+  CHECK(t.offset == 0);
+  CHECK(format_multiplier(t) == "");
+  compute_ticks(-1e-6, 1e-6, 5, t);
+  CHECK(t.offset == 0 && t.exponent == -6);
+
+  // the tightest range a plot allows (~1.5e-14 relative) still works
+  compute_ticks(1e9, 1e9 * (1 + 1.5e-14), 5, t);
+  CHECK(t.major.size() >= 2 && t.offset != 0);
+  for (size_t i = 1; i < t.major.size(); i++) CHECK(t.major[i] > t.major[i - 1]);
+
+  CHECK(format_exact(1e9 + 0.001) == "1000000000.001");
+  CHECK(format_exact(0.1) == "0.1");
+  CHECK(format_coord(1.7e9 + 0.00125, 1e-6) == "1700000000.00125");
+  CHECK(format_coord(3.14159265, 0.01) == "3.14159");
+}
+
+static void test_log_ticks() {
+  Ticks t;
+  // several decades: powers of ten, 2..9 minors
+  compute_log_ticks(1, 1e5, 8, t);
+  CHECK(t.decades && t.major.size() == 6);
+  CHECK(near(t.major[2], 100));
+  CHECK(t.minor.size() == 5 * 8);
+  CHECK(format_tick(1e-3, t) == "$10^{-3}$");
+  CHECK(format_tick(1e5, t) == "$10^{5}$");
+  CHECK(format_multiplier(t) == "");
+  // very long ranges label every few decades
+  compute_log_ticks(1e-30, 1e30, 8, t);
+  CHECK(t.decades && t.major.size() >= 4 && t.major.size() <= 9);
+  CHECK(near(t.step, 10));
+  // under two decades: 1-2-5
+  compute_log_ticks(5, 50, 8, t);
+  CHECK(!t.decades && t.major.size() == 4);
+  CHECK(format_tick(t.major[0], t) == "5" && format_tick(t.major[3], t) == "50");
+  // tiny range: linear ticks inside a log axis
+  compute_log_ticks(1000, 1001, 8, t);
+  CHECK(!t.decades && t.major.size() >= 3);
+  for (size_t i = 0; i < t.major.size(); i++) CHECK(t.major[i] >= 1000 && t.major[i] <= 1001);
+  // invalid ranges give no ticks
+  compute_log_ticks(-1, 10, 8, t);
+  CHECK(t.major.empty());
+}
+
+static void column_extents(const std::vector<Pt> &pts, std::map<int, std::pair<double, double> > &ext);
+
+static void test_log_xform() {
+  Xform xf;
+  xf.xlog = xf.ylog = true;
+  xf.x0 = 0; xf.x1 = 2; xf.y0 = -3; xf.y1 = 0;   // [1, 100] x [1e-3, 1]
+  xf.px = 0; xf.py = 0; xf.pw = 200; xf.ph = 300;
+  CHECK(near(xf.data_sx(10), 100));
+  CHECK(near(xf.data_sy(1e-2), 200));
+  CHECK(near(xf.data_dx(150), sqrt(1000.0)));
+  CHECK(near(xf.data_x0(), 1) && near(xf.data_x1(), 100));
+  // values <= 0 are clipped far below the axis, NaN stays NaN
+  CHECK(xf.data_sy(0) > 1e4 && xf.data_sy(-5) == xf.data_sy(0));
+  CHECK(xf.data_sy(NAN) != xf.data_sy(NAN));
+  Xform lin = xf;
+  lin.xlog = false;
+  CHECK(lin != xf);
+
+  // decimation on a log axis matches transforming every point
+  const size_t n = 200000;
+  std::vector<double> x(n), y(n);
+  for (size_t i = 0; i < n; i++) {
+    x[i] = 1 + i * (99.0 / n);
+    y[i] = (i % 1000 == 0) ? 0 : 0.01 * (1 + sin(i * 0.01)) + 1e-3;
+  }
+  MinMax mm;
+  mm.build(&y[0], n);
+  std::vector<Pt> dec, full;
+  decimate_sorted(&x[0], &y[0], n, mm, xf, dec);
+  CHECK(dec.size() <= 4 * 201 + 8);
+  for (size_t i = 0; i < n; i++) { Pt p; p.x = xf.data_sx(x[i]); p.y = xf.data_sy(y[i]); full.push_back(p); }
+  std::map<int, std::pair<double, double> > ef, ed;
+  column_extents(full, ef);
+  column_extents(dec, ed);
+  CHECK(ef.size() == ed.size());
+  for (std::map<int, std::pair<double, double> >::iterator it = ef.begin(); it != ef.end(); ++it) {
+    CHECK(ed.count(it->first));
+    CHECK(near(ed[it->first].first, it->second.first));
+    CHECK(near(ed[it->first].second, it->second.second));
+  }
+  for (size_t i = 0; i < dec.size(); i++) CHECK(is_break(dec[i]) || dec[i].y == dec[i].y);
+}
+
 static void test_clip() {
   Rect r = { 0, 0, 10, 10 };
   double ax = -5, ay = 5, bx = 15, by = 5;
@@ -205,10 +325,13 @@ static void test_fill() {
 int main() {
   test_ticks();
   test_ticks_extreme();
+  test_ticks_offset();
+  test_log_ticks();
   test_clip();
   test_minmax();
   test_decimation();
   test_fill();
+  test_log_xform();
   if (failures) { printf("%d failure(s)\n", failures); return 1; }
   printf("all algorithm tests passed\n");
   return 0;

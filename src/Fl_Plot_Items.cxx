@@ -68,6 +68,7 @@ static void set_style(int style, int width) {
 Fl_Plot_Item::Fl_Plot_Item()
   : has_b_(false), visible_(true), autoscale_(true), plot_(0) {
   b_[0] = b_[1] = b_[2] = b_[3] = 0;
+  pos_[0] = pos_[1] = 0;
 }
 
 Fl_Plot_Item::~Fl_Plot_Item() {
@@ -77,6 +78,15 @@ Fl_Plot_Item::~Fl_Plot_Item() {
 bool Fl_Plot_Item::bounds(double &x0, double &x1, double &y0, double &y1) const {
   if (!has_b_) return false;
   x0 = b_[0]; x1 = b_[1]; y0 = b_[2]; y1 = b_[3];
+  return true;
+}
+
+bool Fl_Plot_Item::min_positive(double &x, double &y) const {
+  if (has_b_) { x = pos_[0]; y = pos_[1]; return true; }
+  double x0, x1, y0, y1;
+  if (!bounds(x0, x1, y0, y1)) return false;
+  x = x0 > 0 ? x0 : x1;   // the caller ignores values <= 0
+  y = y0 > 0 ? y0 : y1;
   return true;
 }
 
@@ -91,14 +101,17 @@ Rect Fl_Plot_Item::clip_rect(const Xform &xf, double m) {
 
 void Fl_Plot_Item::set_bounds(const double *x, const double *y, size_t n) {
   const double inf = std::numeric_limits<double>::infinity();
-  double x0 = inf, x1 = -inf, y0 = inf, y1 = -inf;
+  double x0 = inf, x1 = -inf, y0 = inf, y1 = -inf, px = inf, py = inf;
   for (size_t i = 0; i < n; i++) {
     if (!is_finite(x[i]) || !is_finite(y[i])) continue;
     x0 = std::min(x0, x[i]); x1 = std::max(x1, x[i]);
     y0 = std::min(y0, y[i]); y1 = std::max(y1, y[i]);
+    if (x[i] > 0) px = std::min(px, x[i]);
+    if (y[i] > 0) py = std::min(py, y[i]);
   }
   has_b_ = x0 <= x1;
   b_[0] = x0; b_[1] = x1; b_[2] = y0; b_[3] = y1;
+  pos_[0] = px; pos_[1] = py;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +202,7 @@ void Fl_Plot_Line::update_cache(const Xform &xf) {
   }
   if (marker_ != FL_PLOT_MARKER_NONE && n) {
     size_t i0 = 0, i1 = n;
-    if (sorted_) visible_range(x_data(), n, xf.x0, xf.x1, i0, i1);
+    if (sorted_) visible_range(x_data(), n, xf.data_x0(), xf.data_x1(), i0, i1);
     marker_points(x_data(), y_data(), i0, i1, xf,
                   clip_rect(xf, marker_size_ / 2.0 + marker_line_width_ + 1), marker_pts_);
   }
@@ -356,11 +369,13 @@ void Fl_Plot_Fill::prepare() {
   // bounds over both curves
   set_bounds(n ? &x_[0] : 0, n ? &lo_[0] : 0, n);
   if (has_b_) {
-    double x0, x1, y0, y1;
+    double x0, x1, y0, y1, py = pos_[1];
     bounds(x0, x1, y0, y1);
     set_bounds(&x_[0], &hi_[0], n);
     b_[2] = std::min(b_[2], y0);
     b_[3] = std::max(b_[3], y1);
+    // smallest positive value of either curve (lo may be 0 where hi is not)
+    pos_[1] = std::min(pos_[1], py);
   }
   cache_valid_ = false;
 }
@@ -378,11 +393,11 @@ void Fl_Plot_Fill::draw(const Xform &xf) {
       // general case: one (possibly self-intersecting) polygon
       for (size_t i = 0; i < n; i++) {
         if (!is_finite(x_[i]) || !is_finite(y1_[i])) continue;
-        Pt p; p.x = xf.sx(x_[i]); p.y = xf.sy(y1_[i]); polys_.push_back(p);
+        Pt p; p.x = xf.data_sx(x_[i]); p.y = xf.data_sy(y1_[i]); polys_.push_back(p);
       }
       for (size_t i = n; i-- > 0;) {
         if (!is_finite(x_[i]) || !is_finite(y2_[i])) continue;
-        Pt p; p.x = xf.sx(x_[i]); p.y = xf.sy(y2_[i]); polys_.push_back(p);
+        Pt p; p.x = xf.data_sx(x_[i]); p.y = xf.data_sy(y2_[i]); polys_.push_back(p);
       }
     }
     if (edge_style_ != FL_PLOT_NO_LINE) {
@@ -481,8 +496,8 @@ void Fl_Plot_Polygon::draw(const Xform &xf) {
       pts[i].x = xf.px + x_[i] * xf.pw;
       pts[i].y = xf.py + xf.ph - y_[i] * xf.ph;
     } else {
-      pts[i].x = xf.sx(x_[i]);
-      pts[i].y = xf.sy(y_[i]);
+      pts[i].x = xf.data_sx(x_[i]);
+      pts[i].y = xf.data_sy(y_[i]);
     }
   }
   draw_screen_polygon(pts, xf);
@@ -514,22 +529,30 @@ bool Fl_Plot_Circle::bounds(double &x0, double &x1, double &y0, double &y1) cons
 }
 
 void Fl_Plot_Circle::draw(const Xform &xf) {
-  double sx = xf.sx(cx_), sy = xf.sy(cy_);
+  double sx = xf.data_sx(cx_), sy = xf.data_sy(cy_);
   double rx = r_, ry = r_;
   if (units_ == FL_PLOT_DATA) {
-    rx = fabs(r_ * xf.pw / (xf.x1 - xf.x0));
-    ry = fabs(r_ * xf.ph / (xf.y1 - xf.y0));
+    // screen extent of the circle (on log axes, the larger of the two sides)
+    rx = std::max(fabs(xf.data_sx(cx_ + r_) - sx), fabs(xf.data_sx(cx_ - r_) - sx));
+    ry = std::max(fabs(xf.data_sy(cy_ + r_) - sy), fabs(xf.data_sy(cy_ - r_) - sy));
   }
   double rmax = std::max(rx, ry);
   // skip if entirely outside the axes
-  if (sx + rx < xf.px - 2 || sx - rx > xf.px + xf.pw + 2 ||
-      sy + ry < xf.py - 2 || sy - ry > xf.py + xf.ph + 2) return;
+  if (!(sx + rx >= xf.px - 2 && sx - rx <= xf.px + xf.pw + 2 &&
+        sy + ry >= xf.py - 2 && sy - ry <= xf.py + xf.ph + 2)) return;
   int n = (int)std::min(4096.0, std::max(24.0, ceil(2 * M_PI * rmax / 3)));
   std::vector<Pt> pts(n);
+  bool curved = units_ == FL_PLOT_DATA && (xf.xlog || xf.ylog);
   for (int i = 0; i < n; i++) {
     double a = 2 * M_PI * i / n;
-    pts[i].x = sx + rx * cos(a);
-    pts[i].y = sy - ry * sin(a);
+    if (curved) {
+      // a circle in data space, distorted by the log scale
+      pts[i].x = xf.data_sx(cx_ + r_ * cos(a));
+      pts[i].y = xf.data_sy(cy_ + r_ * sin(a));
+    } else {
+      pts[i].x = sx + rx * cos(a);
+      pts[i].y = sy - ry * sin(a);
+    }
   }
   draw_screen_polygon(pts, xf);
 }
@@ -547,12 +570,12 @@ void Fl_Plot_Ref_Line::draw(const Xform &xf) {
   fl_color(color_);
   set_style(style_, width_);
   if (orient_ == HORIZONTAL) {
-    double y = xf.sy(value_);
+    double y = xf.data_sy(value_);
     if (y >= xf.py - width_ && y <= xf.py + xf.ph + width_) {
       fl_begin_line(); fl_vertex(xf.px, y); fl_vertex(xf.px + xf.pw, y); fl_end_line();
     }
   } else {
-    double x = xf.sx(value_);
+    double x = xf.data_sx(value_);
     if (x >= xf.px - width_ && x <= xf.px + xf.pw + width_) {
       fl_begin_line(); fl_vertex(x, xf.py); fl_vertex(x, xf.py + xf.ph); fl_end_line();
     }
@@ -587,8 +610,8 @@ void Fl_Plot_Annotation::draw(const Xform &xf) {
     ax = xf.px + x_ * xf.pw;
     ay = xf.py + xf.ph - y_ * xf.ph;
   } else {
-    ax = xf.sx(x_);
-    ay = xf.sy(y_);
+    ax = xf.data_sx(x_);
+    ay = xf.data_sy(y_);
   }
   ax += dx_; ay += dy_;
   if (!is_finite(ax) || !is_finite(ay) || fabs(ax) > 1e6 || fabs(ay) > 1e6) return;

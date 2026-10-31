@@ -59,6 +59,12 @@ enum Fl_Plot_Legend_Pos {
   FL_PLOT_LEGEND_NE = 0, FL_PLOT_LEGEND_NW, FL_PLOT_LEGEND_SW, FL_PLOT_LEGEND_SE
 };
 
+// Axis scale
+enum Fl_Plot_Scale {
+  FL_PLOT_LINEAR = 0,
+  FL_PLOT_LOG          // log10; values <= 0 are clipped far below the axis
+};
+
 // Mouse region reported in events
 enum Fl_Plot_Region {
   FL_PLOT_OUTSIDE = 0,
@@ -125,7 +131,12 @@ public:
   // --- interface for subclasses ---
   // Data bounds for autoscaling; return false if there are none.
   virtual bool bounds(double &x0, double &x1, double &y0, double &y1) const;
-  // Draw into the axes; clipping to the axes box is already set.
+  // Smallest positive x and y, for autoscaling log axes (a value <= 0 or
+  // infinite means none); return false if there is no data. The default
+  // uses the values cached by set_bounds(), else bounds().
+  virtual bool min_positive(double &x, double &y) const;
+  // Draw into the axes; clipping to the axes box is already set. Map data
+  // to the screen with xf.data_sx() / xf.data_sy(), which handle log axes.
   virtual void draw(const Fl_Plot_Algo::Xform &xf) = 0;
   // Draw a legend sample into the given box; return false for none.
   virtual bool draw_legend_icon(int x, int y, int w, int h);
@@ -136,6 +147,7 @@ protected:
   // helper for subclasses: cache finite data bounds for bounds()
   void set_bounds(const double *x, const double *y, size_t n);
   double b_[4];
+  double pos_[2];   // smallest positive x and y (inf if none)
   bool has_b_;
 
 private:
@@ -412,6 +424,10 @@ public:
   Fl_Plot_Ref_Line *axvline(double x, Fl_Color c = FL_BLACK, int style = FL_DASH);
   Fl_Plot_Annotation *text(double x, double y, const char *s,
                            Fl_Plot_Coords coords = FL_PLOT_DATA);
+  // plot() that also sets log scales, as in MATLAB: log x, log y, or both.
+  Fl_Plot_Line *semilogx(const double *x, const double *y, size_t n, const char *fmt = 0);
+  Fl_Plot_Line *semilogy(const double *x, const double *y, size_t n, const char *fmt = 0);
+  Fl_Plot_Line *loglog(const double *x, const double *y, size_t n, const char *fmt = 0);
 
   // Next color of the default color cycle (used by plot() etc.).
   Fl_Color next_color();
@@ -460,6 +476,15 @@ public:
   void legend_position(Fl_Plot_Legend_Pos p) { legend_pos_ = p; }
   Fl_Plot_Legend_Pos legend_position() const { return legend_pos_; }
 
+  // ---- scales ----------------------------------------------------------
+  // Linear (default) or log10. Changing a scale resets the view. On a log
+  // axis, autoscaling fits the positive data, and limits <= 0 passed to
+  // xlim()/view() are replaced by the autoscaled ones.
+  void xscale(Fl_Plot_Scale s);
+  void yscale(Fl_Plot_Scale s);
+  Fl_Plot_Scale xscale() const { return xlog_ ? FL_PLOT_LOG : FL_PLOT_LINEAR; }
+  Fl_Plot_Scale yscale() const { return ylog_ ? FL_PLOT_LOG : FL_PLOT_LINEAR; }
+
   // ---- view limits -----------------------------------------------------
   // Setting limits turns autoscaling off for that axis.
   void xlim(double lo, double hi);
@@ -474,7 +499,8 @@ public:
   double ymax() const { return vy1_; }
   // Set the view without changing autoscale state or the home view.
   void view(double x0, double x1, double y0, double y1);
-  // Fraction of the data range added on each side when autoscaling.
+  // Fraction of the data range added on each side when autoscaling (of the
+  // decades spanned, on a log axis).
   void margin(double m) { margin_ = m > 0 ? m : 0; }
 
   // ---- actions (wire these to your own buttons/keys if you like) ---------
@@ -515,6 +541,8 @@ public:
 
   // ---- coordinates -----------------------------------------------------
   // Axes box in window coordinates (valid after the first draw/layout).
+  // xform() limits are in scale coordinates (log10 units on a log axis);
+  // data_to_screen() and screen_to_data() work in data units.
   void axes_box(int &X, int &Y, int &W, int &H) const;
   void data_to_screen(double x, double y, double &sx, double &sy) const;
   void screen_to_data(double sx, double sy, double &x, double &y) const;
@@ -544,11 +572,14 @@ private:
   struct Axis_Ticks {
     Fl_Plot_Algo::Ticks t;
     std::vector<std::string> labels;
+    std::string mult;    // common factor/offset shown by the axis (mathtext)
   };
   void layout_toolbar();
   void compute_auto_limits(double &x0, double &x1, double &y0, double &y1) const;
   void apply_autoscale();
   void set_view(double x0, double x1, double y0, double y1, bool notify = true);
+  void clean_limits(int axis, double &lo, double &hi) const;
+  void sync_xform();
   void make_ticks(bool xaxis, double lo, double hi, int len_px, Axis_Ticks &out) const;
   void draw_contents(bool for_image);
   void draw_grid(const Axis_Ticks &xt, const Axis_Ticks &yt);
@@ -579,6 +610,7 @@ private:
   double vx0_, vx1_, vy0_, vy1_;
   double ux0_, ux1_, uy0_, uy1_;
   bool xauto_, yauto_, view_set_;
+  bool xlog_, ylog_;
   double margin_, zoom_step_;
   Fl_Plot_Algo::Xform xf_;
   Axis_Ticks xt_, yt_;

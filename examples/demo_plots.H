@@ -182,4 +182,51 @@ inline void demo_mathtext(Fl_Plot *p) {
   p->ylabel("$\\psi(x)^2$ / $\\AA^{-1}$");
 }
 
+// Log axes: a Bode magnitude plot over six decades, with noisy measurements.
+inline void demo_log(Fl_Plot *p) {
+  const int n = 601;
+  std::vector<double> f(n), h2(n), h1(n);
+  for (int i = 0; i < n; i++) {
+    f[i] = pow(10.0, -1 + i * 0.01);                     // 0.1 Hz .. 100 kHz
+    double r = f[i] / 100;
+    h2[i] = 1 / sqrt(pow(1 - r * r, 2) + pow(0.3 * r, 2));   // resonant 2nd order
+    h1[i] = 1 / sqrt(1 + pow(f[i] / 1000, 2));               // 1st order at 1 kHz
+  }
+  p->loglog(&f[0], &h2[0], n)->label("2nd order, $\\zeta = 0.15$");
+  p->plot(f, h1, "--")->label("1st order, $f_c$ = 1 kHz");
+  std::vector<double> fm, hm;
+  srand(3);
+  for (int i = 0; i < n; i += 20) {
+    fm.push_back(f[i]);
+    hm.push_back(h2[i] * (1 + 0.25 * (rand() / (double)RAND_MAX - 0.5)));
+  }
+  p->scatter(&fm[0], &hm[0], fm.size(), FL_PLOT_CIRCLE, 6)->label("measured");
+  p->axhline(1 / sqrt(2.0), FL_DARK3, FL_DOT);
+  p->text(150, 3.5, "resonance")->box(true);
+  p->title("Log axes: frequency response");
+  p->xlabel("$f$ (Hz)");
+  p->ylabel("$|H(f)|$");
+  p->grid(true);
+  p->grid_minor(true);
+  p->legend(true);
+  p->legend_position(FL_PLOT_LEGEND_SW);
+}
+
+// A small range far from zero: 50 ms of 100 kHz samples on a Unix-time axis,
+// a pressure signal of +-20 mPa around 101325 Pa. The tick labels show the
+// offset from a round number, which is shown once in the corner.
+inline void demo_offset(Fl_Plot *p) {
+  const int n = 5000;
+  std::vector<double> y(n);
+  for (int i = 0; i < n; i++) {
+    double t = i * 1e-5;
+    y[i] = 101325 + 0.015 * sin(2 * M_PI * 60 * t) + 0.005 * sin(2 * M_PI * 410 * t);
+  }
+  p->plot_sampled(y, 1730000000.0, 1e-5)->label("$p(t)$");
+  p->title("Small range, large offset");
+  p->xlabel("Unix time (s)");
+  p->ylabel("pressure (Pa)");
+  p->grid(true);
+}
+
 #endif
